@@ -11,6 +11,7 @@ repository = "https://github.com/milolew/milolewAudio"
 [workspace.dependencies]
 # Shared types
 ma-core = { path = "crates/ma-core" }
+ma-audio-engine = { path = "crates/ma-audio-engine" }
 
 # Audio I/O
 cpal = "0.15"

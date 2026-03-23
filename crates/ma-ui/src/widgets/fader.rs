@@ -1,133 +1,227 @@
 //! Vertical fader widget for volume control.
+//!
+//! Renders a vertical slider track with a filled region and draggable thumb.
+//! Drag interaction adjusts track volume (0.0-1.0). Double-click resets
+//! to the default value (0.8). Displays a dB label at the bottom.
 
-/// Response from a fader interaction.
-pub struct FaderResponse {
-    pub value: f32,
-    pub changed: bool,
-    pub inner: egui::Response,
-}
+use vizia::prelude::*;
+use vizia::vg;
 
-/// A vertical fader widget (0.0 to 1.0 range).
+use crate::app_data::{AppData, AppEvent};
+use crate::types::track::TrackId;
+
+/// Default volume when double-clicking (linear, ~-1.9 dB).
+const DEFAULT_VOLUME: f32 = 0.8;
+
+/// Color constants for the fader.
+const TRACK_BG: (u8, u8, u8) = (0x2D, 0x2D, 0x2D);
+const FILL_COLOR: (u8, u8, u8) = (0x5B, 0x9B, 0xD5);
+const THUMB_COLOR: (u8, u8, u8) = (0x8C, 0xC4, 0xEC);
+const LABEL_COLOR: (u8, u8, u8) = (0xB0, 0xB0, 0xB0);
+
+/// Vertical fader with drag interaction and dB readout.
 pub struct Fader {
-    value: f32,
-    width: f32,
-    height: f32,
-    label: Option<String>,
+    track_id: TrackId,
+    dragging: bool,
+    drag_start_y: f32,
+    drag_start_value: f32,
 }
 
 impl Fader {
-    pub fn new(value: f32) -> Self {
+    pub fn new(cx: &mut Context, track_id: TrackId) -> Handle<'_, Self> {
         Self {
-            value,
-            width: 30.0,
-            height: 150.0,
-            label: None,
+            track_id,
+            dragging: false,
+            drag_start_y: 0.0,
+            drag_start_value: 0.0,
         }
+        .build(cx, |_cx| {})
+    }
+}
+
+/// Convert a linear volume (0.0-1.0) to decibels for display.
+/// Returns `-inf` for 0.0 and `0 dB` for 1.0.
+fn volume_to_db(volume: f32) -> f32 {
+    if volume <= 0.0 {
+        return f32::NEG_INFINITY;
+    }
+    20.0 * volume.log10()
+}
+
+/// Format dB value for display.
+fn format_db(db: f32) -> String {
+    if db.is_infinite() && db.is_sign_negative() {
+        "-inf dB".to_string()
+    } else {
+        format!("{:.1} dB", db)
+    }
+}
+
+impl View for Fader {
+    fn element(&self) -> Option<&'static str> {
+        Some("fader")
     }
 
-    pub fn width(mut self, width: f32) -> Self {
-        self.width = width;
-        self
-    }
+    fn draw(&self, cx: &mut DrawContext, canvas: &Canvas) {
+        let bounds = cx.bounds();
+        let scale = cx.scale_factor();
 
-    pub fn height(mut self, height: f32) -> Self {
-        self.height = height;
-        self
-    }
+        // Read current volume from model
+        let volume = cx
+            .data::<AppData>()
+            .and_then(|app| app.track(self.track_id))
+            .map(|track| track.volume)
+            .unwrap_or(DEFAULT_VOLUME);
 
-    pub fn label(mut self, label: impl Into<String>) -> Self {
-        self.label = Some(label.into());
-        self
-    }
+        let padding = 2.0 * scale;
+        let label_area_h = 14.0 * scale;
+        let track_x = bounds.x + padding;
+        let track_y = bounds.y + padding;
+        let track_w = bounds.w - 2.0 * padding;
+        let track_h = bounds.h - 2.0 * padding - label_area_h;
+        let corner_r = 2.0 * scale;
 
-    pub fn show(self, ui: &mut egui::Ui) -> FaderResponse {
-        let desired_size = egui::vec2(self.width, self.height);
-        let (rect, response) =
-            ui.allocate_exact_size(desired_size, egui::Sense::click_and_drag());
+        // -- Background track (rounded rect) --
+        let mut bg_paint = vg::Paint::default();
+        bg_paint.set_color(vg::Color::from_argb(255, TRACK_BG.0, TRACK_BG.1, TRACK_BG.2));
+        bg_paint.set_style(vg::PaintStyle::Fill);
+        bg_paint.set_anti_alias(true);
 
-        let mut new_value = self.value;
-        let mut changed = false;
+        let bg_rrect = vg::RRect::new_rect_xy(
+            vg::Rect::from_xywh(track_x, track_y, track_w, track_h),
+            corner_r,
+            corner_r,
+        );
+        canvas.draw_rrect(bg_rrect, &bg_paint);
 
-        if response.dragged() {
-            let delta_normalized = -response.drag_delta().y / rect.height();
-            new_value = (self.value + delta_normalized).clamp(0.0, 1.0);
-            changed = true;
+        // -- Filled region from bottom --
+        let fill_h = (volume.clamp(0.0, 1.0) * track_h).max(0.0);
+        let fill_y = track_y + track_h - fill_h;
+
+        if fill_h > 0.0 {
+            let mut fill_paint = vg::Paint::default();
+            fill_paint.set_color(vg::Color::from_argb(
+                255,
+                FILL_COLOR.0,
+                FILL_COLOR.1,
+                FILL_COLOR.2,
+            ));
+            fill_paint.set_style(vg::PaintStyle::Fill);
+            fill_paint.set_anti_alias(true);
+
+            // Clip fill to the track rounded rect bounds
+            canvas.save();
+            canvas.clip_rrect(bg_rrect, vg::ClipOp::Intersect, true);
+            canvas.draw_rect(
+                vg::Rect::from_xywh(track_x, fill_y, track_w, fill_h),
+                &fill_paint,
+            );
+            canvas.restore();
         }
 
-        if ui.is_rect_visible(rect) {
-            let painter = ui.painter_at(rect);
+        // -- Thumb (horizontal bar at volume position) --
+        let thumb_h = 6.0 * scale;
+        let thumb_y = fill_y - thumb_h / 2.0;
+        let thumb_y = thumb_y.clamp(track_y - thumb_h / 2.0, track_y + track_h - thumb_h / 2.0);
 
-            // Track background
-            let track_rect = egui::Rect::from_center_size(
-                rect.center(),
-                egui::vec2(6.0, rect.height() - 20.0),
-            );
-            painter.rect_filled(
-                track_rect,
-                2.0,
-                egui::Color32::from_rgb(40, 40, 40),
-            );
+        let mut thumb_paint = vg::Paint::default();
+        thumb_paint.set_color(vg::Color::from_argb(
+            255,
+            THUMB_COLOR.0,
+            THUMB_COLOR.1,
+            THUMB_COLOR.2,
+        ));
+        thumb_paint.set_style(vg::PaintStyle::Fill);
+        thumb_paint.set_anti_alias(true);
 
-            // Filled portion
-            let fill_height = track_rect.height() * new_value;
-            let fill_rect = egui::Rect::from_min_max(
-                egui::pos2(track_rect.left(), track_rect.bottom() - fill_height),
-                track_rect.max,
-            );
-            painter.rect_filled(
-                fill_rect,
-                2.0,
-                egui::Color32::from_rgb(80, 160, 255),
-            );
+        let thumb_rrect = vg::RRect::new_rect_xy(
+            vg::Rect::from_xywh(track_x, thumb_y, track_w, thumb_h),
+            1.0 * scale,
+            1.0 * scale,
+        );
+        canvas.draw_rrect(thumb_rrect, &thumb_paint);
 
-            // Thumb
-            let thumb_y = track_rect.bottom() - track_rect.height() * new_value;
-            let thumb_rect = egui::Rect::from_center_size(
-                egui::pos2(rect.center().x, thumb_y),
-                egui::vec2(self.width - 4.0, 10.0),
-            );
-            let thumb_color = if response.hovered() || response.dragged() {
-                egui::Color32::from_rgb(200, 200, 200)
-            } else {
-                egui::Color32::from_rgb(160, 160, 160)
-            };
-            painter.rect_filled(thumb_rect, 3.0, thumb_color);
+        // -- dB label at bottom --
+        let db = volume_to_db(volume);
+        let label = format_db(db);
 
-            // Value label
-            let db = if new_value > 0.0 {
-                20.0 * new_value.log10()
-            } else {
-                -60.0
-            };
-            let db_text = if db <= -60.0 {
-                "-inf".to_string()
-            } else {
-                format!("{db:.1}")
-            };
-            painter.text(
-                egui::pos2(rect.center().x, rect.bottom() - 8.0),
-                egui::Align2::CENTER_BOTTOM,
-                db_text,
-                egui::FontId::proportional(9.0),
-                egui::Color32::GRAY,
-            );
+        let mut text_paint = vg::Paint::default();
+        text_paint.set_color(vg::Color::from_argb(
+            255,
+            LABEL_COLOR.0,
+            LABEL_COLOR.1,
+            LABEL_COLOR.2,
+        ));
+        text_paint.set_anti_alias(true);
 
-            // Optional label at top
-            if let Some(label) = &self.label {
-                painter.text(
-                    egui::pos2(rect.center().x, rect.top() + 2.0),
-                    egui::Align2::CENTER_TOP,
-                    label,
-                    egui::FontId::proportional(10.0),
-                    egui::Color32::LIGHT_GRAY,
-                );
+        let font = vg::Font::default();
+        let label_y = bounds.y + bounds.h - 2.0 * scale;
+        let label_x = bounds.x + padding;
+        canvas.draw_str(&label, (label_x, label_y), &font, &text_paint);
+    }
+
+    fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
+        event.map(|window_event, meta| match window_event {
+            WindowEvent::MouseDown(MouseButton::Left) => {
+                // Read current volume to use as drag baseline
+                let volume = cx
+                    .data::<AppData>()
+                    .and_then(|app| app.track(self.track_id))
+                    .map(|track| track.volume)
+                    .unwrap_or(DEFAULT_VOLUME);
+
+                self.dragging = true;
+                self.drag_start_y = cx.mouse().cursor_y;
+                self.drag_start_value = volume;
+                cx.capture();
+                cx.lock_cursor_icon();
+                meta.consume();
             }
-        }
+            WindowEvent::MouseDoubleClick(MouseButton::Left) => {
+                // Reset to default volume
+                cx.emit(AppEvent::SetTrackVolume {
+                    track_id: self.track_id,
+                    volume: DEFAULT_VOLUME,
+                });
+                cx.needs_redraw();
+                meta.consume();
+            }
+            WindowEvent::MouseMove(_, _) => {
+                if self.dragging {
+                    let bounds = cx.bounds();
+                    let cursor_y = cx.mouse().cursor_y;
 
-        FaderResponse {
-            value: new_value,
-            changed,
-            inner: response,
-        }
+                    // Dragging up increases volume, down decreases.
+                    // Scale so full drag across the widget height = full 0-1 range.
+                    let dy = self.drag_start_y - cursor_y;
+                    let range_h = bounds.h.max(1.0);
+                    let delta = dy / range_h;
+                    let new_volume = (self.drag_start_value + delta).clamp(0.0, 1.0);
+
+                    cx.emit(AppEvent::SetTrackVolume {
+                        track_id: self.track_id,
+                        volume: new_volume,
+                    });
+                    cx.needs_redraw();
+                    meta.consume();
+                }
+            }
+            WindowEvent::MouseUp(MouseButton::Left) => {
+                if self.dragging {
+                    self.dragging = false;
+                    cx.release();
+                    cx.unlock_cursor_icon();
+                    meta.consume();
+                }
+            }
+            _ => {}
+        });
+
+        // Redraw on poll so the fader reflects external volume changes.
+        event.map(|app_event, _meta| {
+            if let crate::app_data::AppEvent::PollEngine = app_event {
+                cx.needs_redraw();
+            }
+        });
     }
 }

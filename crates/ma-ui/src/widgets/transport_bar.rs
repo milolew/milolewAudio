@@ -1,119 +1,102 @@
 //! Transport bar widget — play, stop, record, tempo, time display.
 
-use crate::state::transport_state::TransportState;
+use vizia::prelude::*;
+
+use crate::app_data::{AppData, AppEvent};
 use crate::types::time::tick_to_bbt;
 
-/// Actions emitted by the transport bar.
-#[derive(Debug, Clone)]
-pub enum TransportAction {
-    Play,
-    Stop,
-    Record,
-    Pause,
-    SetTempo(f64),
-}
+pub struct TransportBar;
 
-/// Transport bar response.
-pub struct TransportBarResponse {
-    pub actions: Vec<TransportAction>,
-}
+impl TransportBar {
+    pub fn new(cx: &mut Context) -> Handle<'_, Self> {
+        Self.build(cx, |cx| {
+            HStack::new(cx, |cx| {
+                // Stop button
+                Button::new(cx, |cx| Label::new(cx, "\u{23F9}"))
+                    .on_press(|cx| cx.emit(AppEvent::Stop))
+                    .class("transport-btn");
 
-/// Transport bar widget — renders play/stop/record buttons, tempo, and position.
-pub struct TransportBar<'a> {
-    transport: &'a TransportState,
-}
+                // Play button
+                Button::new(cx, |cx| Label::new(cx, "\u{25B6}"))
+                    .on_press(|cx| cx.emit(AppEvent::Play))
+                    .class("transport-btn")
+                    .toggle_class(
+                        "playing",
+                        AppData::transport.map(|t| t.is_playing && !t.is_recording),
+                    );
 
-impl<'a> TransportBar<'a> {
-    pub fn new(transport: &'a TransportState) -> Self {
-        Self { transport }
+                // Record button
+                Button::new(cx, |cx| Label::new(cx, "\u{23FA}"))
+                    .on_press(|cx| cx.emit(AppEvent::Record))
+                    .class("transport-btn")
+                    .toggle_class(
+                        "recording",
+                        AppData::transport.map(|t| t.is_recording),
+                    );
+
+                Element::new(cx).class("separator");
+
+                // Position display (Bar.Beat.Tick)
+                Label::new(
+                    cx,
+                    AppData::transport.map(|t| {
+                        let bbt = tick_to_bbt(t.position, t.time_signature);
+                        format!("{}.{}.{:03}", bbt.bar, bbt.beat, bbt.tick)
+                    }),
+                )
+                .class("position-display");
+
+                Element::new(cx).class("separator");
+
+                // BPM display
+                Label::new(cx, "BPM").class("bpm-label");
+                Label::new(
+                    cx,
+                    AppData::transport.map(|t| format!("{:.1}", t.tempo)),
+                )
+                .class("tempo-display");
+
+                Element::new(cx).class("separator");
+
+                // Time signature
+                Label::new(
+                    cx,
+                    AppData::transport.map(|t| {
+                        format!(
+                            "{}/{}",
+                            t.time_signature.numerator, t.time_signature.denominator
+                        )
+                    }),
+                )
+                .class("time-sig");
+
+                Element::new(cx).class("separator");
+
+                // Loop toggle
+                Button::new(cx, |cx| Label::new(cx, "Loop"))
+                    .on_press(|cx| cx.emit(AppEvent::ToggleLoop))
+                    .class("transport-btn")
+                    .toggle_class(
+                        "active",
+                        AppData::transport.map(|t| t.loop_enabled),
+                    );
+
+                Element::new(cx).class("separator");
+
+                // CPU meter
+                Label::new(
+                    cx,
+                    AppData::mixer.map(|m| format!("CPU: {:.0}%", m.cpu_load * 100.0)),
+                )
+                .class("cpu-display");
+            })
+            .class("transport-inner");
+        })
     }
+}
 
-    pub fn show(self, ui: &mut egui::Ui) -> TransportBarResponse {
-        let mut actions = Vec::new();
-
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-
-            // Stop button
-            let stop_color = if !self.transport.is_playing {
-                egui::Color32::WHITE
-            } else {
-                egui::Color32::GRAY
-            };
-            if ui
-                .add(egui::Button::new(
-                    egui::RichText::new("\u{23F9}").size(20.0).color(stop_color),
-                ))
-                .clicked()
-            {
-                actions.push(TransportAction::Stop);
-            }
-
-            // Play button
-            let play_color = if self.transport.is_playing && !self.transport.is_recording {
-                egui::Color32::from_rgb(100, 255, 100)
-            } else {
-                egui::Color32::GRAY
-            };
-            if ui
-                .add(egui::Button::new(
-                    egui::RichText::new("\u{25B6}").size(20.0).color(play_color),
-                ))
-                .clicked()
-            {
-                actions.push(TransportAction::Play);
-            }
-
-            // Record button
-            let rec_color = if self.transport.is_recording {
-                egui::Color32::from_rgb(255, 60, 60)
-            } else {
-                egui::Color32::from_rgb(180, 60, 60)
-            };
-            if ui
-                .add(egui::Button::new(
-                    egui::RichText::new("\u{23FA}").size(20.0).color(rec_color),
-                ))
-                .clicked()
-            {
-                actions.push(TransportAction::Record);
-            }
-
-            ui.separator();
-
-            // Position display
-            let bbt = tick_to_bbt(
-                self.transport.position,
-                self.transport.time_signature,
-            );
-            ui.label(
-                egui::RichText::new(format!("{bbt}"))
-                    .monospace()
-                    .size(16.0),
-            );
-
-            ui.separator();
-
-            // Tempo display/edit
-            ui.label("BPM:");
-            let mut tempo = self.transport.tempo;
-            let tempo_response = ui.add(
-                egui::DragValue::new(&mut tempo)
-                    .range(20.0..=300.0)
-                    .speed(0.5)
-                    .fixed_decimals(1),
-            );
-            if tempo_response.changed() {
-                actions.push(TransportAction::SetTempo(tempo));
-            }
-
-            ui.separator();
-
-            // Time signature display
-            let ts = self.transport.time_signature;
-            ui.label(format!("{}/{}", ts.numerator, ts.denominator));
-        });
-
-        TransportBarResponse { actions }
+impl View for TransportBar {
+    fn element(&self) -> Option<&'static str> {
+        Some("transport-bar")
     }
 }

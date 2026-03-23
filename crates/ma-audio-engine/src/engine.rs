@@ -253,6 +253,7 @@ pub fn build_engine(config: EngineConfig) -> (CallbackState, EngineHandle) {
         tracks,
         input_node_index: input_node_graph_index,
         output_node_index: output_node_graph_index,
+        input_capture_reader: None,
         sample_rate: config.sample_rate as f32,
         last_callback_duration: std::time::Duration::ZERO,
         callback_count: 0,

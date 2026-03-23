@@ -9,6 +9,7 @@
 
 pub mod audio_buffer;
 pub mod commands;
+pub mod device;
 pub mod events;
 pub mod ids;
 pub mod parameters;

@@ -1,112 +1,207 @@
 //! Vertical piano keyboard strip for the piano roll left sidebar.
+//!
+//! Draws a traditional piano keyboard vertically, aligned with the piano roll
+//! pitch rows. Clicking a key emits PreviewNoteOn/Off events for auditioning.
 
+use vizia::prelude::*;
+use vizia::vg;
+
+use crate::app_data::{AppData, AppEvent};
 use crate::types::midi::note_name;
 
-/// Actions from the keyboard strip (clicking a key).
-#[derive(Debug, Clone)]
-pub enum KeyboardAction {
-    NoteOn { note: u8, velocity: u8 },
-    NoteOff { note: u8 },
+/// Black key pitch classes within an octave (C=0).
+const BLACK_KEY_CLASSES: [u8; 5] = [1, 3, 6, 8, 10];
+
+/// Returns true if the given MIDI pitch is a black key.
+fn is_black_key(pitch: u8) -> bool {
+    BLACK_KEY_CLASSES.contains(&(pitch % 12))
 }
 
-/// Keyboard strip response.
-pub struct KeyboardStripResponse {
-    pub actions: Vec<KeyboardAction>,
+/// Returns true if the given pitch is a C note.
+fn is_c_note(pitch: u8) -> bool {
+    pitch % 12 == 0
 }
 
-/// Vertical piano keyboard showing note names.
-pub struct KeyboardStrip {
-    scroll_y: u8,
-    note_height: f32,
-    width: f32,
-    visible_rows: u8,
-}
+/// Vertical piano keyboard strip displayed alongside the piano roll grid.
+pub struct KeyboardStrip;
 
 impl KeyboardStrip {
-    pub fn new(scroll_y: u8, note_height: f32, visible_rows: u8) -> Self {
-        Self {
-            scroll_y,
-            note_height,
-            width: 48.0,
-            visible_rows,
-        }
+    pub fn new(cx: &mut Context) -> Handle<'_, Self> {
+        Self.build(cx, |_cx| {})
+    }
+}
+
+impl View for KeyboardStrip {
+    fn element(&self) -> Option<&'static str> {
+        Some("keyboard-strip")
     }
 
-    pub fn show(self, ui: &mut egui::Ui) -> KeyboardStripResponse {
-        let height = self.visible_rows as f32 * self.note_height;
-        let desired_size = egui::vec2(self.width, height);
-        let (rect, response) =
-            ui.allocate_exact_size(desired_size, egui::Sense::click());
+    fn draw(&self, cx: &mut DrawContext, canvas: &Canvas) {
+        let bounds = cx.bounds();
+        let scale = cx.scale_factor();
 
-        let mut actions = Vec::new();
+        let Some(app) = cx.data::<AppData>() else {
+            return;
+        };
 
-        if ui.is_rect_visible(rect) {
-            let painter = ui.painter_at(rect);
+        let pr = &app.piano_roll;
+        let note_height = pr.note_height;
+        let scroll_y = pr.scroll_y;
+        let visible_rows = pr.visible_rows(bounds.h) + 2; // draw a couple extra for partial rows
 
-            for i in 0..self.visible_rows {
-                let pitch = self.scroll_y.saturating_sub(i);
-                if pitch > 127 {
-                    continue;
-                }
+        // -- Background fill --
+        let mut bg_paint = vg::Paint::default();
+        bg_paint.set_color(vg::Color::from_argb(255, 50, 50, 50));
+        bg_paint.set_style(vg::PaintStyle::Fill);
+        bg_paint.set_anti_alias(true);
+        canvas.draw_rect(
+            vg::Rect::from_xywh(bounds.x, bounds.y, bounds.w, bounds.h),
+            &bg_paint,
+        );
 
-                let y = rect.top() + i as f32 * self.note_height;
-                let key_rect = egui::Rect::from_min_size(
-                    egui::pos2(rect.left(), y),
-                    egui::vec2(self.width, self.note_height),
+        // Reusable paints
+        let mut white_key_paint = vg::Paint::default();
+        white_key_paint.set_color(vg::Color::from_argb(255, 232, 232, 232));
+        white_key_paint.set_style(vg::PaintStyle::Fill);
+        white_key_paint.set_anti_alias(true);
+
+        let mut black_key_paint = vg::Paint::default();
+        black_key_paint.set_color(vg::Color::from_argb(255, 58, 58, 58));
+        black_key_paint.set_style(vg::PaintStyle::Fill);
+        black_key_paint.set_anti_alias(true);
+
+        let mut separator_paint = vg::Paint::default();
+        separator_paint.set_color(vg::Color::from_argb(255, 80, 80, 80));
+        separator_paint.set_style(vg::PaintStyle::Stroke);
+        separator_paint.set_stroke_width(0.5 * scale);
+        separator_paint.set_anti_alias(true);
+
+        let mut c_separator_paint = vg::Paint::default();
+        c_separator_paint.set_color(vg::Color::from_argb(255, 120, 120, 120));
+        c_separator_paint.set_style(vg::PaintStyle::Stroke);
+        c_separator_paint.set_stroke_width(1.0 * scale);
+        c_separator_paint.set_anti_alias(true);
+
+        let mut text_paint = vg::Paint::default();
+        text_paint.set_color(vg::Color::from_argb(255, 40, 40, 40));
+        text_paint.set_anti_alias(true);
+
+        let mut text_paint_white = vg::Paint::default();
+        text_paint_white.set_color(vg::Color::from_argb(255, 180, 180, 180));
+        text_paint_white.set_anti_alias(true);
+
+        let font = vg::Font::default();
+
+        // Black key visual width (shorter than white keys)
+        let black_key_width = bounds.w * 0.6;
+
+        // Draw each visible pitch row as a piano key
+        for i in 0..visible_rows {
+            let pitch_i32 = scroll_y as i32 - i as i32;
+            if pitch_i32 < 0 || pitch_i32 > 127 {
+                continue;
+            }
+            let pitch = pitch_i32 as u8;
+
+            let y = pr.pitch_to_y(pitch, bounds.y);
+            let key_bottom = y + note_height;
+
+            // Skip if entirely out of bounds
+            if key_bottom < bounds.y || y > bounds.y + bounds.h {
+                continue;
+            }
+
+            if is_black_key(pitch) {
+                // Black key: draw dark rect, narrower
+                canvas.draw_rect(
+                    vg::Rect::from_xywh(bounds.x, y, black_key_width, note_height),
+                    &black_key_paint,
                 );
-
-                let is_black = matches!(pitch % 12, 1 | 3 | 6 | 8 | 10);
-                let bg_color = if is_black {
-                    egui::Color32::from_rgb(30, 30, 30)
-                } else {
-                    egui::Color32::from_rgb(60, 60, 60)
-                };
-
-                painter.rect_filled(key_rect, 0.0, bg_color);
-
-                // Border between keys
-                painter.line_segment(
-                    [
-                        egui::pos2(rect.left(), y + self.note_height),
-                        egui::pos2(rect.right(), y + self.note_height),
-                    ],
-                    egui::Stroke::new(0.5, egui::Color32::from_rgb(50, 50, 50)),
+                // Right edge of black key has a light separator
+                canvas.draw_rect(
+                    vg::Rect::from_xywh(
+                        bounds.x + black_key_width,
+                        y,
+                        bounds.w - black_key_width,
+                        note_height,
+                    ),
+                    &white_key_paint,
                 );
+            } else {
+                // White key: full width light background
+                canvas.draw_rect(
+                    vg::Rect::from_xywh(bounds.x, y, bounds.w, note_height),
+                    &white_key_paint,
+                );
+            }
 
-                // Note name on C notes or every key if zoomed in enough
-                let is_c = pitch % 12 == 0;
-                if is_c || self.note_height > 16.0 {
-                    let name = note_name(pitch);
-                    let text_color = if is_c {
-                        egui::Color32::WHITE
-                    } else {
-                        egui::Color32::from_rgb(120, 120, 120)
-                    };
-                    painter.text(
-                        egui::pos2(rect.right() - 4.0, y + self.note_height / 2.0),
-                        egui::Align2::RIGHT_CENTER,
-                        name,
-                        egui::FontId::proportional(9.0),
-                        text_color,
-                    );
-                }
+            // Horizontal separator between keys
+            let sep_paint = if is_c_note(pitch) {
+                &c_separator_paint
+            } else {
+                &separator_paint
+            };
+            canvas.draw_line(
+                (bounds.x, key_bottom),
+                (bounds.x + bounds.w, key_bottom),
+                sep_paint,
+            );
+
+            // Draw note name text for C notes
+            if is_c_note(pitch) {
+                let label = note_name(pitch);
+                let text_y = y + note_height * 0.75;
+                let text_x = bounds.x + 4.0 * scale;
+
+                // C notes are white keys, use dark text
+                canvas.draw_str(label, (text_x, text_y), &font, &text_paint);
             }
         }
 
-        // Handle click on keyboard to preview note
-        if response.clicked() {
-            if let Some(pos) = response.interact_pointer_pos() {
-                let row = ((pos.y - rect.top()) / self.note_height) as u8;
-                let pitch = self.scroll_y.saturating_sub(row);
-                if pitch <= 127 {
-                    actions.push(KeyboardAction::NoteOn {
+        // Right border of the keyboard strip
+        let mut border_paint = vg::Paint::default();
+        border_paint.set_color(vg::Color::from_argb(255, 100, 100, 100));
+        border_paint.set_style(vg::PaintStyle::Stroke);
+        border_paint.set_stroke_width(1.0 * scale);
+        border_paint.set_anti_alias(true);
+        canvas.draw_line(
+            (bounds.x + bounds.w - 0.5, bounds.y),
+            (bounds.x + bounds.w - 0.5, bounds.y + bounds.h),
+            &border_paint,
+        );
+    }
+
+    fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
+        event.map(|window_event, meta| match window_event {
+            WindowEvent::MouseDown(MouseButton::Left) => {
+                let bounds = cx.bounds();
+                let cursor_y = cx.mouse().cursor_y;
+
+                if let Some(app) = cx.data::<AppData>() {
+                    let pitch = app.piano_roll.y_to_pitch(cursor_y, bounds.y);
+                    cx.emit(AppEvent::PreviewNoteOn {
                         note: pitch,
                         velocity: 100,
                     });
                 }
-            }
-        }
 
-        KeyboardStripResponse { actions }
+                cx.capture();
+                cx.needs_redraw();
+                meta.consume();
+            }
+            WindowEvent::MouseUp(MouseButton::Left) => {
+                let bounds = cx.bounds();
+                let cursor_y = cx.mouse().cursor_y;
+
+                if let Some(app) = cx.data::<AppData>() {
+                    let pitch = app.piano_roll.y_to_pitch(cursor_y, bounds.y);
+                    cx.emit(AppEvent::PreviewNoteOff { note: pitch });
+                }
+
+                cx.release();
+                meta.consume();
+            }
+            _ => {}
+        });
     }
 }

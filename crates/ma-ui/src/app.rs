@@ -4,10 +4,17 @@
 //! poll responses → update state → render views → dispatch actions → send commands.
 
 use eframe::egui;
+use uuid::Uuid;
+
+use ma_audio_engine::device_manager::AudioDeviceManager;
+use ma_audio_engine::engine::EngineConfig;
+use ma_core::commands::EngineCommand as CoreCommand;
+use ma_core::device::AudioDeviceConfig;
 
 use crate::engine_bridge::bridge::{create_bridge, EngineBridge};
 use crate::engine_bridge::commands::EngineCommand;
 use crate::engine_bridge::mock_engine::{spawn_mock_engine, MockEngineHandle};
+use crate::engine_bridge::real_bridge::RealEngineBridge;
 use crate::engine_bridge::responses::EngineResponse;
 use crate::state::app_state::{ActiveView, AppState};
 use crate::types::midi::NoteId;
@@ -18,24 +25,40 @@ use crate::views::mixer_view::{MixerAction, MixerView};
 use crate::views::piano_roll_view::{PianoRollAction, PianoRollView};
 use crate::widgets::transport_bar::{TransportAction, TransportBar};
 
+/// Create a deterministic UUID for demo data (stable across restarts).
+fn demo_id(n: u64) -> Uuid {
+    Uuid::from_u64_pair(0, n)
+}
+
+/// Engine connection mode — real audio hardware or mock for development.
+pub enum EngineMode {
+    /// Connected to real audio hardware via cpal.
+    Real {
+        device_manager: AudioDeviceManager,
+        bridge: RealEngineBridge,
+    },
+    /// Mock engine for standalone GUI development / no audio device.
+    Mock {
+        bridge: EngineBridge,
+        _handle: MockEngineHandle,
+    },
+}
+
 /// The main DAW application.
 pub struct DawApp {
     state: AppState,
-    bridge: EngineBridge,
-    _engine_handle: MockEngineHandle,
+    engine: EngineMode,
 }
 
 impl DawApp {
     /// Create a new DawApp with demo data and mock engine.
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        let (bridge, endpoint) = create_bridge();
-
         // Demo tracks
         let tracks = vec![
-            TrackState::new_midi(TrackId(1), "Melody", [100, 160, 255]),
-            TrackState::new_midi(TrackId(2), "Bass", [255, 140, 80]),
-            TrackState::new_audio(TrackId(3), "Drums", [80, 220, 120]),
-            TrackState::new_midi(TrackId(4), "Pad", [200, 100, 255]),
+            TrackState::new_midi(TrackId(demo_id(1)), "Melody", [100, 160, 255]),
+            TrackState::new_midi(TrackId(demo_id(2)), "Bass", [255, 140, 80]),
+            TrackState::new_audio(TrackId(demo_id(3)), "Drums", [80, 220, 120]),
+            TrackState::new_midi(TrackId(demo_id(4)), "Pad", [200, 100, 255]),
         ];
 
         let track_ids: Vec<TrackId> = tracks.iter().map(|t| t.id).collect();
@@ -43,8 +66,8 @@ impl DawApp {
         // Demo clips with some notes
         let clips = vec![
             ClipState {
-                id: ClipId(1),
-                track_id: TrackId(1),
+                id: ClipId(demo_id(1)),
+                track_id: TrackId(demo_id(1)),
                 start_tick: 0,
                 duration_ticks: PPQN * 8, // 2 bars
                 name: "Melody A".into(),
@@ -84,8 +107,8 @@ impl DawApp {
                 ],
             },
             ClipState {
-                id: ClipId(2),
-                track_id: TrackId(2),
+                id: ClipId(demo_id(2)),
+                track_id: TrackId(demo_id(2)),
                 start_tick: 0,
                 duration_ticks: PPQN * 8,
                 name: "Bass Line".into(),
@@ -109,16 +132,16 @@ impl DawApp {
                 ],
             },
             ClipState {
-                id: ClipId(3),
-                track_id: TrackId(3),
+                id: ClipId(demo_id(3)),
+                track_id: TrackId(demo_id(3)),
                 start_tick: 0,
                 duration_ticks: PPQN * 16,
                 name: "Drum Loop".into(),
                 notes: Vec::new(), // Audio clip — no MIDI notes
             },
             ClipState {
-                id: ClipId(4),
-                track_id: TrackId(4),
+                id: ClipId(demo_id(4)),
+                track_id: TrackId(demo_id(4)),
                 start_tick: PPQN * 4,
                 duration_ticks: PPQN * 12,
                 name: "Pad Chords".into(),
@@ -161,19 +184,48 @@ impl DawApp {
             ..Default::default()
         };
 
-        // Spawn mock engine
-        let engine_handle = spawn_mock_engine(endpoint, track_ids);
+        // Try real audio engine first, fallback to mock
+        let engine = Self::try_real_engine().unwrap_or_else(|e| {
+            log::warn!("Real audio engine unavailable: {e}. Using mock engine.");
+            let (bridge, endpoint) = create_bridge();
+            let handle = spawn_mock_engine(endpoint, track_ids.clone());
+            EngineMode::Mock {
+                bridge,
+                _handle: handle,
+            }
+        });
 
         Self {
             state: app_state,
-            bridge,
-            _engine_handle: engine_handle,
+            engine,
         }
+    }
+
+    /// Attempt to start the real audio engine with default device.
+    fn try_real_engine() -> Result<EngineMode, String> {
+        let mut device_manager = AudioDeviceManager::new();
+        device_manager.enumerate_devices();
+
+        let device_config = AudioDeviceConfig::default();
+        let engine_config = EngineConfig::default();
+
+        let handle = device_manager
+            .apply_config(device_config, engine_config)
+            .map_err(|e| e.to_string())?;
+
+        let bridge = RealEngineBridge::new(handle);
+        Ok(EngineMode::Real {
+            device_manager,
+            bridge,
+        })
     }
 
     /// Step 1: Poll engine responses and fold into state.
     fn poll_engine(&mut self) {
-        let responses = self.bridge.poll_responses();
+        let responses = match &mut self.engine {
+            EngineMode::Real { bridge, .. } => bridge.poll_responses(),
+            EngineMode::Mock { bridge, .. } => bridge.poll_responses(),
+        };
         for resp in responses {
             match resp {
                 EngineResponse::TransportUpdate {
@@ -202,24 +254,76 @@ impl DawApp {
         }
     }
 
+    /// Send a command to whichever engine is active.
+    fn send_command(&mut self, cmd: EngineCommand) {
+        match &mut self.engine {
+            EngineMode::Real { bridge, .. } => {
+                // Translate UI command to core command
+                if let Some(core_cmd) = Self::translate_command(&cmd) {
+                    bridge.send_command(core_cmd);
+                }
+            }
+            EngineMode::Mock { bridge, .. } => {
+                bridge.send_command(cmd);
+            }
+        }
+    }
+
+    /// Translate a UI engine command to a core engine command.
+    fn translate_command(cmd: &EngineCommand) -> Option<CoreCommand> {
+        match cmd {
+            EngineCommand::Play => Some(CoreCommand::Play),
+            EngineCommand::Stop => Some(CoreCommand::Stop),
+            EngineCommand::Pause => Some(CoreCommand::Pause),
+            EngineCommand::Record => Some(CoreCommand::StartRecording),
+            EngineCommand::SetTempo(bpm) => Some(CoreCommand::SetTempo(*bpm)),
+            EngineCommand::SetTrackVolume { track_id, volume } => {
+                Some(CoreCommand::SetTrackVolume {
+                    track_id: *track_id,
+                    volume: *volume,
+                })
+            }
+            EngineCommand::SetTrackPan { track_id, pan } => {
+                Some(CoreCommand::SetTrackPan {
+                    track_id: *track_id,
+                    pan: *pan,
+                })
+            }
+            EngineCommand::SetTrackMute { track_id, mute } => {
+                Some(CoreCommand::SetTrackMute {
+                    track_id: *track_id,
+                    mute: *mute,
+                })
+            }
+            EngineCommand::SetTrackSolo { track_id, solo } => {
+                Some(CoreCommand::SetTrackSolo {
+                    track_id: *track_id,
+                    solo: *solo,
+                })
+            }
+            // MIDI commands don't have core equivalents yet
+            _ => None,
+        }
+    }
+
     /// Dispatch transport actions.
     fn dispatch_transport(&mut self, actions: Vec<TransportAction>) {
         for action in actions {
             match action {
                 TransportAction::Play => {
-                    self.bridge.send_command(EngineCommand::Play);
+                    self.send_command(EngineCommand::Play);
                 }
                 TransportAction::Stop => {
-                    self.bridge.send_command(EngineCommand::Stop);
+                    self.send_command(EngineCommand::Stop);
                 }
                 TransportAction::Record => {
-                    self.bridge.send_command(EngineCommand::Record);
+                    self.send_command(EngineCommand::Record);
                 }
                 TransportAction::Pause => {
-                    self.bridge.send_command(EngineCommand::Pause);
+                    self.send_command(EngineCommand::Pause);
                 }
                 TransportAction::SetTempo(bpm) => {
-                    self.bridge.send_command(EngineCommand::SetTempo(bpm));
+                    self.send_command(EngineCommand::SetTempo(bpm));
                 }
             }
         }
@@ -254,32 +358,34 @@ impl DawApp {
                     if let Some(track) = self.state.tracks.iter_mut().find(|t| t.id == track_id) {
                         track.volume = volume;
                     }
-                    self.bridge
-                        .send_command(EngineCommand::SetTrackVolume { track_id, volume });
+                    self.send_command(EngineCommand::SetTrackVolume { track_id, volume });
                 }
                 MixerAction::SetPan { track_id, pan } => {
                     if let Some(track) = self.state.tracks.iter_mut().find(|t| t.id == track_id) {
                         track.pan = pan;
                     }
-                    self.bridge
-                        .send_command(EngineCommand::SetTrackPan { track_id, pan });
+                    self.send_command(EngineCommand::SetTrackPan { track_id, pan });
                 }
                 MixerAction::ToggleMute(track_id) => {
-                    if let Some(track) = self.state.tracks.iter_mut().find(|t| t.id == track_id) {
+                    let new_mute = if let Some(track) = self.state.tracks.iter_mut().find(|t| t.id == track_id) {
                         track.mute = !track.mute;
-                        self.bridge.send_command(EngineCommand::SetTrackMute {
-                            track_id,
-                            mute: track.mute,
-                        });
+                        Some(track.mute)
+                    } else {
+                        None
+                    };
+                    if let Some(mute) = new_mute {
+                        self.send_command(EngineCommand::SetTrackMute { track_id, mute });
                     }
                 }
                 MixerAction::ToggleSolo(track_id) => {
-                    if let Some(track) = self.state.tracks.iter_mut().find(|t| t.id == track_id) {
+                    let new_solo = if let Some(track) = self.state.tracks.iter_mut().find(|t| t.id == track_id) {
                         track.solo = !track.solo;
-                        self.bridge.send_command(EngineCommand::SetTrackSolo {
-                            track_id,
-                            solo: track.solo,
-                        });
+                        Some(track.solo)
+                    } else {
+                        None
+                    };
+                    if let Some(solo) = new_solo {
+                        self.send_command(EngineCommand::SetTrackSolo { track_id, solo });
                     }
                 }
             }
@@ -300,16 +406,14 @@ impl DawApp {
                     if let Some(clip) = self.state.clips.iter().find(|c| c.id == clip_id) {
                         let new_clip = clip.with_note_added(note);
                         self.state.update_clip(new_clip);
-                        self.bridge
-                            .send_command(EngineCommand::AddNote { clip_id, note });
+                        self.send_command(EngineCommand::AddNote { clip_id, note });
                     }
                 }
                 PianoRollAction::RemoveNote(note_id) => {
                     if let Some(clip) = self.state.clips.iter().find(|c| c.id == clip_id) {
                         let new_clip = clip.with_note_removed(note_id);
                         self.state.update_clip(new_clip);
-                        self.bridge
-                            .send_command(EngineCommand::RemoveNote { clip_id, note_id });
+                        self.send_command(EngineCommand::RemoveNote { clip_id, note_id });
                     }
                 }
                 PianoRollAction::MoveNote {
@@ -326,7 +430,7 @@ impl DawApp {
                             };
                             let new_clip = clip.with_note_updated(updated);
                             self.state.update_clip(new_clip);
-                            self.bridge.send_command(EngineCommand::MoveNote {
+                            self.send_command(EngineCommand::MoveNote {
                                 clip_id,
                                 note_id,
                                 new_start,
@@ -347,7 +451,7 @@ impl DawApp {
                             };
                             let new_clip = clip.with_note_updated(updated);
                             self.state.update_clip(new_clip);
-                            self.bridge.send_command(EngineCommand::ResizeNote {
+                            self.send_command(EngineCommand::ResizeNote {
                                 clip_id,
                                 note_id,
                                 new_duration,
@@ -356,14 +460,14 @@ impl DawApp {
                     }
                 }
                 PianoRollAction::PreviewNoteOn { note, velocity } => {
-                    self.bridge.send_command(EngineCommand::NoteOn {
+                    self.send_command(EngineCommand::NoteOn {
                         channel: 0,
                         note,
                         velocity,
                     });
                 }
                 PianoRollAction::PreviewNoteOff { note } => {
-                    self.bridge.send_command(EngineCommand::NoteOff {
+                    self.send_command(EngineCommand::NoteOff {
                         channel: 0,
                         note,
                         velocity: 0,

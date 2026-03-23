@@ -5,13 +5,8 @@ use serde::{Deserialize, Serialize};
 use super::midi::Note;
 use super::time::Tick;
 
-/// Unique track identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct TrackId(pub u64);
-
-/// Unique clip identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ClipId(pub u64);
+// Re-export ID types from ma-core for unified type system.
+pub use ma_core::ids::{ClipId, TrackId};
 
 /// Track type discriminator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,9 +55,6 @@ impl TrackState {
         }
     }
 
-    pub fn egui_color(&self) -> egui::Color32 {
-        egui::Color32::from_rgb(self.color[0], self.color[1], self.color[2])
-    }
 }
 
 /// Clip data — a region on a track containing notes or audio reference.

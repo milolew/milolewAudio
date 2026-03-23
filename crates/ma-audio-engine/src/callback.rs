@@ -20,6 +20,7 @@ use ma_core::events::EngineEvent;
 use crate::command_processor;
 use crate::graph::node::ProcessContext;
 use crate::graph::topology::AudioGraph;
+use crate::input_capture::InputCaptureReader;
 use crate::track::Track;
 use crate::transport::Transport;
 
@@ -52,12 +53,22 @@ pub struct CallbackState {
     /// Sample rate.
     pub sample_rate: f32,
 
+    /// Reader for input capture ring buffer (filled by cpal input callback).
+    /// `None` if no input device is active.
+    pub input_capture_reader: Option<InputCaptureReader>,
+
     /// For CPU load measurement.
     pub last_callback_duration: std::time::Duration,
 
     /// Callback counter for conditional CPU measurement (every 16th callback).
     pub callback_count: u64,
 }
+
+// SAFETY: CallbackState is moved into the cpal audio callback closure and
+// accessed exclusively from the audio thread after that point. The raw pointers
+// inside AudioGraph (buffer slices) are only accessed from the audio callback.
+// No concurrent access occurs.
+unsafe impl Send for CallbackState {}
 
 /// The audio output callback. Called by cpal for each output buffer.
 ///
@@ -93,16 +104,30 @@ pub fn audio_callback(
         return;
     }
 
-    // 2. Advance transport
+    // 2. Drain input capture ring buffer into InputNode
+    if let (Some(reader), Some(input_idx)) =
+        (&mut state.input_capture_reader, state.input_node_index)
+    {
+        let channels = reader.channel_count();
+        let interleaved = reader.drain_into_staging(num_frames);
+        if let Some(input_node) = state
+            .graph
+            .node_downcast_mut::<crate::graph::nodes::input_node::InputNode>(input_idx)
+        {
+            input_node.fill_from_input(interleaved, channels, num_frames);
+        }
+    }
+
+    // 3. Advance transport
     let playhead = state.transport.advance(num_frames);
 
-    // 3. Compute solo state across all tracks
+    // 4. Compute solo state across all tracks
     let any_solo = state
         .tracks
         .iter()
         .any(|t| t.solo.load(std::sync::atomic::Ordering::Relaxed));
 
-    // 4. Build process context
+    // 5. Build process context
     let context = ProcessContext {
         sample_rate: state.sample_rate,
         transport_state: state.transport.state(),
@@ -112,10 +137,10 @@ pub fn audio_callback(
         any_solo,
     };
 
-    // 5. Process audio graph
+    // 6. Process audio graph
     state.graph.process(&context);
 
-    // 6. Check for recording overflow on track nodes
+    // 7. Check for recording overflow on track nodes
     for track in &state.tracks {
         if let Some(idx) = state.graph.find_node_index(track.track_node_id) {
             if let Some(track_node) = state
@@ -134,7 +159,7 @@ pub fn audio_callback(
         }
     }
 
-    // 7. Read output from OutputNode
+    // 8. Read output from OutputNode
     if let Some(output_idx) = state.output_node_index {
         if let Some(output_node) =
             state.graph.node_downcast_mut::<crate::graph::nodes::output_node::OutputNode>(output_idx)
@@ -147,36 +172,16 @@ pub fn audio_callback(
         output.fill(0.0);
     }
 
-    // 8. Send metering events
+    // 9. Send metering events
     send_meter_events(state, &context);
 
-    // 9. Measure CPU load (only every 16th callback to reduce Instant::now() calls)
+    // 10. Measure CPU load (only every 16th callback to reduce Instant::now() calls)
     if let Some(start) = start {
         let elapsed = start.elapsed();
         state.last_callback_duration = elapsed;
         let budget = std::time::Duration::from_secs_f64(num_frames as f64 / state.sample_rate as f64);
         let cpu_load = elapsed.as_secs_f32() / budget.as_secs_f32();
         let _ = state.event_producer.push(EngineEvent::CpuLoad(cpu_load));
-    }
-}
-
-/// The audio input callback. Called by cpal for each input buffer.
-///
-/// Copies the captured input data to the InputNode's buffer so it's
-/// available for the next output callback's graph processing.
-#[inline]
-pub fn input_callback(
-    state: &mut CallbackState,
-    input: &[f32],
-    num_frames: u32,
-    channels: usize,
-) {
-    if let Some(input_idx) = state.input_node_index {
-        if let Some(input_node) =
-            state.graph.node_downcast_mut::<crate::graph::nodes::input_node::InputNode>(input_idx)
-        {
-            input_node.fill_from_input(input, channels, num_frames);
-        }
     }
 }
 

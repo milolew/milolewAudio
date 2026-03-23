@@ -1,4 +1,4 @@
-//! Reusable custom egui widgets for the DAW.
+//! Reusable custom vizia widgets for the DAW.
 
 pub mod channel_strip;
 pub mod fader;

@@ -5,4 +5,5 @@
 pub mod bridge;
 pub mod commands;
 pub mod mock_engine;
+pub mod real_bridge;
 pub mod responses;

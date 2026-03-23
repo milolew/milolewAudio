@@ -1,19 +1,23 @@
 //! milolew Audio — GUI entry point.
 
-fn main() -> eframe::Result<()> {
+use vizia::prelude::*;
+
+use ma_ui::app_data::AppData;
+use ma_ui::views::root_view::RootView;
+
+fn main() {
     env_logger::init();
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("milolew Audio")
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([800.0, 500.0]),
-        ..Default::default()
-    };
+    Application::new(|cx| {
+        cx.add_stylesheet(include_str!("theme.css"))
+            .expect("Failed to add theme stylesheet");
 
-    eframe::run_native(
-        "milolew Audio",
-        options,
-        Box::new(|cc| Ok(Box::new(ma_ui::app::DawApp::new(cc)))),
-    )
+        AppData::new().build(cx);
+
+        RootView::new(cx);
+    })
+    .title("milolew Audio")
+    .inner_size((1280, 800))
+    .run()
+    .expect("Failed to run application");
 }
