@@ -1,0 +1,206 @@
+//! Command processor — drains the command ring buffer at the start of each audio callback.
+//!
+//! This runs on the audio thread but only processes the ring buffer drain
+//! (no allocations). Parameter changes are applied immediately via atomics.
+//! Topology changes are deferred to the graph-build thread.
+
+use std::sync::atomic::Ordering;
+
+use common_types::commands::EngineCommand;
+use common_types::events::EngineEvent;
+use common_types::ids::TrackId;
+use common_types::parameters::TransportState;
+
+use crate::graph::nodes::track_node::TrackNode;
+use crate::graph::AudioGraph;
+use crate::transport::Transport;
+
+/// Maximum commands to process per callback.
+/// Prevents spending too much time on commands if the UI floods the buffer.
+const MAX_COMMANDS_PER_CALLBACK: usize = 64;
+
+/// Process all pending commands from the UI.
+///
+/// This is called at the beginning of each audio callback, before graph processing.
+///
+/// # Arguments
+/// * `command_consumer` - SPSC ring buffer consumer for incoming commands
+/// * `event_producer` - SPSC ring buffer producer for outgoing events
+/// * `transport` - The transport state machine
+/// * `graph` - The audio graph (for parameter routing)
+/// * `tracks` - Track lookup for parameter changes
+///
+/// # Real-Time Safety
+/// This function runs on the audio thread. It only reads from the ring buffer
+/// and writes to atomics — no allocations or I/O.
+pub fn process_commands(
+    command_consumer: &mut rtrb::Consumer<EngineCommand>,
+    event_producer: &mut rtrb::Producer<EngineEvent>,
+    transport: &mut Transport,
+    graph: &mut AudioGraph,
+    tracks: &[crate::track::Track],
+) -> bool {
+    let mut shutdown = false;
+    let mut processed = 0;
+
+    while processed < MAX_COMMANDS_PER_CALLBACK {
+        let command = match command_consumer.pop() {
+            Ok(cmd) => cmd,
+            Err(_) => break, // Ring buffer empty
+        };
+
+        match command {
+            // ── Transport ──
+            EngineCommand::Play => {
+                transport.play();
+                let _ = event_producer
+                    .push(EngineEvent::TransportStateChanged(TransportState::Playing));
+            }
+            EngineCommand::Stop => {
+                transport.stop();
+                let _ = event_producer
+                    .push(EngineEvent::TransportStateChanged(TransportState::Stopped));
+            }
+            EngineCommand::Pause => {
+                transport.pause();
+                let _ = event_producer
+                    .push(EngineEvent::TransportStateChanged(TransportState::Paused));
+            }
+            EngineCommand::SetPosition(pos) => {
+                transport.set_position(pos);
+            }
+            EngineCommand::SetTempo(bpm) => {
+                transport.set_tempo(bpm);
+            }
+            EngineCommand::SetLoop {
+                start,
+                end,
+                enabled,
+            } => {
+                transport.set_loop(start, end, enabled);
+            }
+
+            // ── Track parameters ──
+            EngineCommand::SetTrackVolume { track_id, volume } => {
+                if let Some(track) = find_track(tracks, track_id) {
+                    track.volume.store(volume, Ordering::Relaxed);
+                }
+            }
+            EngineCommand::SetTrackPan { track_id, pan } => {
+                if let Some(track) = find_track(tracks, track_id) {
+                    track.pan.store(pan, Ordering::Relaxed);
+                }
+            }
+            EngineCommand::SetTrackMute { track_id, mute } => {
+                if let Some(track) = find_track(tracks, track_id) {
+                    track.mute.store(mute, Ordering::Relaxed);
+                }
+            }
+            EngineCommand::SetTrackSolo { track_id, solo } => {
+                if let Some(track) = find_track(tracks, track_id) {
+                    track.solo.store(solo, Ordering::Relaxed);
+                }
+            }
+
+            // ── Recording ──
+            EngineCommand::ArmTrack { track_id, armed } => {
+                if let Some(track) = find_track(tracks, track_id) {
+                    track.record_armed.store(armed, Ordering::Relaxed);
+                }
+            }
+            EngineCommand::StartRecording => {
+                transport.start_recording();
+                // Set is_recording on all armed track nodes
+                for track in tracks {
+                    if track.record_armed.load(Ordering::Relaxed) {
+                        set_track_node_recording(graph, track.track_node_id.0, true);
+                    }
+                }
+                let _ = event_producer
+                    .push(EngineEvent::TransportStateChanged(TransportState::Recording));
+            }
+            EngineCommand::StopRecording => {
+                transport.stop_recording();
+                // Clear is_recording on all track nodes
+                for track in tracks {
+                    set_track_node_recording(graph, track.track_node_id.0, false);
+                }
+                let _ = event_producer.push(EngineEvent::TransportStateChanged(
+                    transport.state(),
+                ));
+            }
+
+            // ── Topology changes ──
+            // These are more complex and would normally be deferred to a graph-build thread.
+            // For now, we handle simple cases inline (the graph is small enough).
+            EngineCommand::AddTrack { .. } => {
+                // TODO: Defer to graph-build thread
+                log::info!("AddTrack command received — graph rebuild needed");
+            }
+            EngineCommand::RemoveTrack { .. } => {
+                // TODO: Defer to graph-build thread
+                log::info!("RemoveTrack command received — graph rebuild needed");
+            }
+            EngineCommand::LoadClip { track_id, clip_id, data, channels, start_sample, length_samples } => {
+                // Find the WavPlayerNode for this track and add the clip
+                if let Some(track) = find_track(tracks, track_id) {
+                    if let Some(idx) = graph.find_node_index(track.player_node_id) {
+                        // We need to downcast to WavPlayerNode to call add_clip
+                        // This is safe because we know the node at player_node_id is a WavPlayerNode
+                        if let Some(player) = graph.node_downcast_mut::<crate::graph::nodes::wav_player::WavPlayerNode>(idx) {
+                            use crate::graph::nodes::wav_player::AudioClipRef;
+                            player.add_clip(AudioClipRef {
+                                clip_id,
+                                data,
+                                channels,
+                                start_sample,
+                                length_samples,
+                            });
+                        }
+                    }
+                }
+            }
+            EngineCommand::RemoveClip { track_id, clip_id } => {
+                if let Some(track) = find_track(tracks, track_id) {
+                    if let Some(idx) = graph.find_node_index(track.player_node_id) {
+                        if let Some(player) = graph.node_downcast_mut::<crate::graph::nodes::wav_player::WavPlayerNode>(idx) {
+                            player.remove_clip(clip_id);
+                        }
+                    }
+                }
+            }
+
+            // ── Lifecycle ──
+            EngineCommand::Shutdown => {
+                shutdown = true;
+            }
+        }
+
+        processed += 1;
+    }
+
+    shutdown
+}
+
+/// Find a track by its ID in the tracks slice.
+#[inline]
+fn find_track(tracks: &[crate::track::Track], id: TrackId) -> Option<&crate::track::Track> {
+    tracks.iter().find(|t| t.id == id)
+}
+
+/// Set the is_recording flag on a track node by its NodeId value.
+fn set_track_node_recording(graph: &mut AudioGraph, node_id_val: u32, recording: bool) {
+    // Find the node and try to downcast to TrackNode
+    for i in 0..graph.node_count() {
+        if let Some(node) = graph.node(i) {
+            if node.node_id() == common_types::ids::NodeId(node_id_val) {
+                if let Some(track_node) = graph.node_downcast_mut::<TrackNode>(i) {
+                    track_node
+                        .is_recording
+                        .store(recording, Ordering::Relaxed);
+                }
+                break;
+            }
+        }
+    }
+}

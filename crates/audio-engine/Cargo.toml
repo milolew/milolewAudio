@@ -1,0 +1,20 @@
+[package]
+name = "audio-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Real-time audio engine for milolew Audio DAW"
+
+[dependencies]
+common-types = { workspace = true }
+cpal = { workspace = true }
+rtrb = { workspace = true }
+crossbeam-channel = { workspace = true }
+hound = { workspace = true }
+uuid = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+default = []
+asio = ["cpal/asio"]
