@@ -10,7 +10,7 @@ repository = "https://github.com/milolew/milolewAudio"
 
 [workspace.dependencies]
 # Shared types
-common-types = { path = "crates/common-types" }
+ma-core = { path = "crates/ma-core" }
 
 # Audio I/O
 cpal = "0.15"

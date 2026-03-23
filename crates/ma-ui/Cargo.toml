@@ -1,0 +1,18 @@
+[package]
+name = "ma-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "milolew Audio — DAW GUI interface (egui-based)"
+
+[dependencies]
+eframe = "0.31"
+egui = "0.31"
+egui_extras = "0.31"
+rtrb = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = "1"
