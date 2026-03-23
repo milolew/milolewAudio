@@ -1,0 +1,18 @@
+[package]
+name = "gui-interface"
+version = "0.1.0"
+edition = "2021"
+description = "milolew Audio — DAW GUI interface (egui-based)"
+license = "GPL-3.0"
+
+[dependencies]
+eframe = "0.31"
+egui = "0.31"
+egui_extras = "0.31"
+rtrb = "0.3"
+log = "0.4"
+env_logger = "0.11"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+pretty_assertions = "1"
