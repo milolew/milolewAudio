@@ -143,8 +143,12 @@ impl AudioBuffer {
         }
     }
 
-    /// Apply stereo panning (constant-power pan law).
+    /// Apply stereo panning (constant-power pan law, -3dB at center).
     /// `pan`: -1.0 = full left, 0.0 = center, 1.0 = full right.
+    ///
+    /// Note: At center (pan=0.0), both channels receive ~0.707 (-3dB) gain.
+    /// This is the standard constant-power pan law used in professional DAWs.
+    /// Total perceived loudness is preserved across the stereo field.
     #[inline]
     pub fn apply_pan(&mut self, pan: f32) {
         if self.channels < 2 {
@@ -190,10 +194,16 @@ impl AudioBuffer {
     /// Deinterleave from cpal's interleaved format into this buffer.
     /// Input: `[L0, R0, L1, R1, ...]`
     /// Output: channel 0 = `[L0, L1, ...]`, channel 1 = `[R0, R1, ...]`
+    ///
+    /// If the input is too short or parameters exceed limits, the buffer is cleared silently
+    /// (no panic on the audio thread).
     pub fn from_interleaved(&mut self, interleaved: &[f32], channels: usize, frames: u32) {
-        debug_assert!(channels <= MAX_CHANNELS);
-        debug_assert!((frames as usize) <= MAX_BUFFER_SIZE);
-        debug_assert!(interleaved.len() >= channels * frames as usize);
+        let channels = channels.min(MAX_CHANNELS);
+        let frames = (frames as usize).min(MAX_BUFFER_SIZE) as u32;
+        if interleaved.len() < channels * frames as usize {
+            self.clear();
+            return;
+        }
         self.channels = channels;
         self.frames = frames;
         for frame in 0..frames as usize {
@@ -207,8 +217,14 @@ impl AudioBuffer {
     /// Interleave from this buffer into cpal's interleaved format.
     /// Input: channel 0 = `[L0, L1, ...]`, channel 1 = `[R0, R1, ...]`
     /// Output: `[L0, R0, L1, R1, ...]`
+    ///
+    /// If the output slice is too short, writes as much as fits silently
+    /// (no panic on the audio thread).
     pub fn to_interleaved(&self, output: &mut [f32]) {
-        debug_assert!(output.len() >= self.channels * self.frames as usize);
+        if output.len() < self.channels * self.frames as usize {
+            output.fill(0.0);
+            return;
+        }
         for frame in 0..self.frames as usize {
             for ch in 0..self.channels {
                 output[frame * self.channels + ch] =

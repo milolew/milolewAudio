@@ -68,7 +68,23 @@ pub enum EngineCommand {
     /// Stop recording on all armed tracks.
     StopRecording,
 
-    // ── Graph topology ─────────────────────────────────────────
+    // ── Engine lifecycle ───────────────────────────────────────
+    /// Gracefully shut down the audio engine.
+    Shutdown,
+}
+
+// Ensure EngineCommand is Send (required for cross-thread ring buffer).
+// This is a compile-time check — if any variant contains !Send data, it fails.
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<EngineCommand>();
+};
+
+/// Commands that involve heap allocation (String, Arc) and must NOT be processed
+/// on the audio thread. These go through a separate crossbeam channel to the
+/// graph-build thread.
+#[derive(Debug)]
+pub enum TopologyCommand {
     /// Add a new track to the audio graph.
     AddTrack {
         track_id: TrackId,
@@ -95,15 +111,10 @@ pub enum EngineCommand {
         track_id: TrackId,
         clip_id: ClipId,
     },
-
-    // ── Engine lifecycle ───────────────────────────────────────
-    /// Gracefully shut down the audio engine.
-    Shutdown,
 }
 
-// Ensure EngineCommand is Send (required for cross-thread ring buffer).
-// This is a compile-time check — if any variant contains !Send data, it fails.
-const _: fn() = || {
+// Ensure TopologyCommand is Send.
+const _TOPOLOGY_SEND: fn() = || {
     fn assert_send<T: Send>() {}
-    assert_send::<EngineCommand>();
+    assert_send::<TopologyCommand>();
 };

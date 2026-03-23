@@ -4,6 +4,7 @@
 //! Audio data is pre-loaded into memory as `Arc<[f32]>` (non-interleaved)
 //! by the file loader thread. The audio thread only reads this data.
 
+use std::any::Any;
 use std::sync::Arc;
 
 use common_types::audio_buffer::AudioBuffer;
@@ -137,4 +138,7 @@ impl AudioNode for WavPlayerNode {
     fn node_id(&self) -> NodeId {
         self.id
     }
+
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }

@@ -4,6 +4,7 @@
 //! It reads parameters via atomics (shared with UI) and optionally
 //! pushes audio to a recording ring buffer.
 
+use std::any::Any;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -62,6 +63,10 @@ pub struct TrackNode {
     /// SPSC ring buffer producer for sending recorded audio to disk thread.
     /// `None` if this track has no recording capability.
     record_producer: Option<rtrb::Producer<f32>>,
+
+    /// Set to `true` when samples are dropped during recording due to ring buffer overflow.
+    /// Checked and reset by the audio callback after processing.
+    pub record_overflow: AtomicBool,
 }
 
 impl TrackNode {
@@ -80,6 +85,7 @@ impl TrackNode {
             record_armed: Arc::new(AtomicBool::new(false)),
             is_recording: Arc::new(AtomicBool::new(false)),
             record_producer,
+            record_overflow: AtomicBool::new(false),
         }
     }
 
@@ -124,7 +130,7 @@ impl AudioNode for TrackNode {
         &mut self,
         inputs: &[&AudioBuffer],
         outputs: &mut [&mut AudioBuffer],
-        _context: &ProcessContext,
+        context: &ProcessContext,
     ) {
         let output = match outputs.first_mut() {
             Some(o) => o,
@@ -133,6 +139,12 @@ impl AudioNode for TrackNode {
 
         // If muted, output silence
         if self.mute.load(Ordering::Relaxed) {
+            output.clear();
+            return;
+        }
+
+        // Solo logic: if any track is soloed and this track is NOT soloed, output silence
+        if context.any_solo && !self.solo.load(Ordering::Relaxed) {
             output.clear();
             return;
         }
@@ -151,9 +163,10 @@ impl AudioNode for TrackNode {
         {
             // Record the raw input (pre-fader) for clean recording
             if let Some(input) = inputs.first() {
-                let _dropped = self.push_to_record_buffer(input);
-                // If dropped > 0, the engine should send a RecordingOverflow event.
-                // That's handled by the command processor checking ring buffer state.
+                let dropped = self.push_to_record_buffer(input);
+                if dropped > 0 {
+                    self.record_overflow.store(true, Ordering::Relaxed);
+                }
             }
         }
 
@@ -183,4 +196,7 @@ impl AudioNode for TrackNode {
     fn node_id(&self) -> NodeId {
         self.id
     }
+
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }

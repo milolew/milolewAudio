@@ -4,6 +4,8 @@
 //! After processing, the audio callback reads from this node's internal
 //! buffer to fill the cpal output.
 
+use std::any::Any;
+
 use common_types::audio_buffer::AudioBuffer;
 use common_types::ids::NodeId;
 
@@ -73,4 +75,7 @@ impl AudioNode for OutputNode {
     fn node_id(&self) -> NodeId {
         self.id
     }
+
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }

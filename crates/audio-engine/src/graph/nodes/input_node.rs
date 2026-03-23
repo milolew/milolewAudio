@@ -4,6 +4,8 @@
 //! It reads from a pre-filled capture buffer that the cpal input callback
 //! populates before graph processing begins.
 
+use std::any::Any;
+
 use common_types::audio_buffer::AudioBuffer;
 use common_types::ids::NodeId;
 
@@ -81,4 +83,7 @@ impl AudioNode for InputNode {
     fn node_id(&self) -> NodeId {
         self.id
     }
+
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }

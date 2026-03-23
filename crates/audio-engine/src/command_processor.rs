@@ -130,46 +130,6 @@ pub fn process_commands(
                 ));
             }
 
-            // ── Topology changes ──
-            // These are more complex and would normally be deferred to a graph-build thread.
-            // For now, we handle simple cases inline (the graph is small enough).
-            EngineCommand::AddTrack { .. } => {
-                // TODO: Defer to graph-build thread
-                log::info!("AddTrack command received — graph rebuild needed");
-            }
-            EngineCommand::RemoveTrack { .. } => {
-                // TODO: Defer to graph-build thread
-                log::info!("RemoveTrack command received — graph rebuild needed");
-            }
-            EngineCommand::LoadClip { track_id, clip_id, data, channels, start_sample, length_samples } => {
-                // Find the WavPlayerNode for this track and add the clip
-                if let Some(track) = find_track(tracks, track_id) {
-                    if let Some(idx) = graph.find_node_index(track.player_node_id) {
-                        // We need to downcast to WavPlayerNode to call add_clip
-                        // This is safe because we know the node at player_node_id is a WavPlayerNode
-                        if let Some(player) = graph.node_downcast_mut::<crate::graph::nodes::wav_player::WavPlayerNode>(idx) {
-                            use crate::graph::nodes::wav_player::AudioClipRef;
-                            player.add_clip(AudioClipRef {
-                                clip_id,
-                                data,
-                                channels,
-                                start_sample,
-                                length_samples,
-                            });
-                        }
-                    }
-                }
-            }
-            EngineCommand::RemoveClip { track_id, clip_id } => {
-                if let Some(track) = find_track(tracks, track_id) {
-                    if let Some(idx) = graph.find_node_index(track.player_node_id) {
-                        if let Some(player) = graph.node_downcast_mut::<crate::graph::nodes::wav_player::WavPlayerNode>(idx) {
-                            player.remove_clip(clip_id);
-                        }
-                    }
-                }
-            }
-
             // ── Lifecycle ──
             EngineCommand::Shutdown => {
                 shutdown = true;

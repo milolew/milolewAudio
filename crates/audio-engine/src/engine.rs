@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicBool, AtomicI64};
 use std::sync::Arc;
 
-use common_types::commands::EngineCommand;
+use common_types::commands::{EngineCommand, TopologyCommand};
 use common_types::events::EngineEvent;
 use common_types::ids::{NodeId, TrackId};
 use common_types::parameters::TrackConfig;
@@ -77,6 +77,14 @@ pub struct EngineHandle {
     /// Disk I/O event receiver (for recording completion notifications).
     pub disk_event_receiver: crossbeam_channel::Receiver<DiskEvent>,
 
+    /// Send topology commands (AddTrack, RemoveTrack, LoadClip, RemoveClip)
+    /// to the graph-build thread. These commands involve heap-allocating types
+    /// and must NOT be processed on the audio thread.
+    pub topology_command_sender: crossbeam_channel::Sender<TopologyCommand>,
+
+    /// Receive topology commands on the graph-build thread (future use).
+    pub topology_command_receiver: crossbeam_channel::Receiver<TopologyCommand>,
+
     /// Track handles for reading atomic parameters from the UI.
     pub tracks: Vec<TrackHandle>,
 
@@ -129,6 +137,9 @@ pub fn build_engine(config: EngineConfig) -> (CallbackState, EngineHandle) {
 
     // Create disk I/O thread
     let (disk_cmd_tx, disk_evt_rx) = disk_io::spawn_disk_io_thread();
+
+    // Create topology command channel (for graph-build thread, future use)
+    let (topology_cmd_tx, topology_cmd_rx) = crossbeam_channel::unbounded::<TopologyCommand>();
 
     // Create transport
     let transport = Transport::new(config.sample_rate as f64);
@@ -244,6 +255,7 @@ pub fn build_engine(config: EngineConfig) -> (CallbackState, EngineHandle) {
         output_node_index: output_node_graph_index,
         sample_rate: config.sample_rate as f32,
         last_callback_duration: std::time::Duration::ZERO,
+        callback_count: 0,
     };
 
     let handle = EngineHandle {
@@ -253,6 +265,8 @@ pub fn build_engine(config: EngineConfig) -> (CallbackState, EngineHandle) {
         is_recording,
         disk_command_sender: disk_cmd_tx,
         disk_event_receiver: disk_evt_rx,
+        topology_command_sender: topology_cmd_tx,
+        topology_command_receiver: topology_cmd_rx,
         tracks: track_handles,
         config,
     };
@@ -339,6 +353,6 @@ mod tests {
 
         // Check event was sent back
         let event = handle.event_consumer.pop().unwrap();
-        matches!(event, EngineEvent::TransportStateChanged(TransportState::Playing));
+        assert!(matches!(event, EngineEvent::TransportStateChanged(TransportState::Playing)));
     }
 }

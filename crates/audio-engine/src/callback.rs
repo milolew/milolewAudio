@@ -54,6 +54,9 @@ pub struct CallbackState {
 
     /// For CPU load measurement.
     pub last_callback_duration: std::time::Duration,
+
+    /// Callback counter for conditional CPU measurement (every 16th callback).
+    pub callback_count: u64,
 }
 
 /// The audio output callback. Called by cpal for each output buffer.
@@ -71,7 +74,9 @@ pub fn audio_callback(
     output: &mut [f32],
     num_frames: u32,
 ) {
-    let start = Instant::now();
+    state.callback_count += 1;
+    let measure_cpu = state.callback_count.is_multiple_of(16);
+    let start = if measure_cpu { Some(Instant::now()) } else { None };
 
     // 1. Drain commands
     let shutdown = command_processor::process_commands(
@@ -91,19 +96,45 @@ pub fn audio_callback(
     // 2. Advance transport
     let playhead = state.transport.advance(num_frames);
 
-    // 3. Build process context
+    // 3. Compute solo state across all tracks
+    let any_solo = state
+        .tracks
+        .iter()
+        .any(|t| t.solo.load(std::sync::atomic::Ordering::Relaxed));
+
+    // 4. Build process context
     let context = ProcessContext {
         sample_rate: state.sample_rate,
         transport_state: state.transport.state(),
         playhead_samples: playhead,
         tempo: state.transport.tempo(),
         buffer_size: num_frames,
+        any_solo,
     };
 
-    // 4. Process audio graph
+    // 5. Process audio graph
     state.graph.process(&context);
 
-    // 5. Read output from OutputNode
+    // 6. Check for recording overflow on track nodes
+    for track in &state.tracks {
+        if let Some(idx) = state.graph.find_node_index(track.track_node_id) {
+            if let Some(track_node) = state
+                .graph
+                .node_downcast_mut::<crate::graph::nodes::track_node::TrackNode>(idx)
+            {
+                if track_node
+                    .record_overflow
+                    .swap(false, std::sync::atomic::Ordering::Relaxed)
+                {
+                    let _ = state
+                        .event_producer
+                        .push(EngineEvent::RecordingOverflow { track_id: track.id });
+                }
+            }
+        }
+    }
+
+    // 7. Read output from OutputNode
     if let Some(output_idx) = state.output_node_index {
         if let Some(output_node) =
             state.graph.node_downcast_mut::<crate::graph::nodes::output_node::OutputNode>(output_idx)
@@ -116,15 +147,17 @@ pub fn audio_callback(
         output.fill(0.0);
     }
 
-    // 6. Send metering events
+    // 8. Send metering events
     send_meter_events(state, &context);
 
-    // 7. Measure CPU load
-    let elapsed = start.elapsed();
-    state.last_callback_duration = elapsed;
-    let budget = std::time::Duration::from_secs_f64(num_frames as f64 / state.sample_rate as f64);
-    let cpu_load = elapsed.as_secs_f32() / budget.as_secs_f32();
-    let _ = state.event_producer.push(EngineEvent::CpuLoad(cpu_load));
+    // 9. Measure CPU load (only every 16th callback to reduce Instant::now() calls)
+    if let Some(start) = start {
+        let elapsed = start.elapsed();
+        state.last_callback_duration = elapsed;
+        let budget = std::time::Duration::from_secs_f64(num_frames as f64 / state.sample_rate as f64);
+        let cpu_load = elapsed.as_secs_f32() / budget.as_secs_f32();
+        let _ = state.event_producer.push(EngineEvent::CpuLoad(cpu_load));
+    }
 }
 
 /// The audio input callback. Called by cpal for each input buffer.

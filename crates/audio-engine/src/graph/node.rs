@@ -1,5 +1,7 @@
 //! The core `AudioNode` trait that all graph nodes implement.
 
+use std::any::Any;
+
 use common_types::audio_buffer::AudioBuffer;
 use common_types::ids::NodeId;
 use common_types::parameters::TransportState;
@@ -23,6 +25,10 @@ pub struct ProcessContext {
 
     /// Number of frames in this callback buffer.
     pub buffer_size: FrameCount,
+
+    /// Whether any track in the project has solo enabled.
+    /// Track nodes use this to mute themselves if they are not soloed.
+    pub any_solo: bool,
 }
 
 /// Trait for all nodes in the audio processing graph.
@@ -63,4 +69,10 @@ pub trait AudioNode: Send {
 
     /// This node's unique identifier within the graph.
     fn node_id(&self) -> NodeId;
+
+    /// Downcast to `&dyn Any` for safe type-checked downcasting.
+    fn as_any(&self) -> &dyn Any;
+
+    /// Downcast to `&mut dyn Any` for safe type-checked downcasting.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }

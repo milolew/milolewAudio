@@ -39,6 +39,14 @@ pub struct AudioGraph {
 
     /// Mapping: for each node index, which buffer indices are its outputs.
     node_output_buffers: Vec<Vec<usize>>,
+
+    /// Pre-allocated scratch space for input buffer pointers during process().
+    /// Avoids heap allocation on the real-time audio thread.
+    process_input_ptrs: Vec<*const AudioBuffer>,
+
+    /// Pre-allocated scratch space for output buffer pointers during process().
+    /// Avoids heap allocation on the real-time audio thread.
+    process_output_ptrs: Vec<*mut AudioBuffer>,
 }
 
 impl AudioGraph {
@@ -96,6 +104,8 @@ impl AudioGraph {
             }
         }
 
+        let edge_count = edges.len();
+
         Self {
             nodes,
             edges,
@@ -103,6 +113,8 @@ impl AudioGraph {
             buffers,
             node_input_buffers,
             node_output_buffers,
+            process_input_ptrs: Vec::with_capacity(edge_count),
+            process_output_ptrs: Vec::with_capacity(edge_count),
         }
     }
 
@@ -121,26 +133,45 @@ impl AudioGraph {
             buf.clear();
         }
 
+        let buf_ptr = self.buffers.as_mut_ptr();
+
         for &node_idx in &self.schedule {
-            // Collect input buffer references
             let input_indices = &self.node_input_buffers[node_idx];
             let output_indices = &self.node_output_buffers[node_idx];
 
-            // Safety: We need to borrow buffers and node simultaneously.
-            // The schedule guarantees no node reads a buffer that hasn't been written yet.
-            // We use unsafe to split the borrow — inputs are read-only (already written by
-            // upstream nodes), outputs are write-only (this node writes them).
-            //
-            // This is sound because:
-            // 1. Input and output buffer sets are disjoint for any single node (DAG property)
-            // 2. The topological order ensures inputs are written before being read
-            // 3. No buffer is both an input and output for the same node
+            // Gather input pointers — clear() reuses existing capacity, no allocation.
+            self.process_input_ptrs.clear();
+            for &idx in input_indices {
+                self.process_input_ptrs.push(unsafe { buf_ptr.add(idx) as *const AudioBuffer });
+            }
 
-            let (input_refs, mut output_refs) = unsafe {
-                split_buffer_refs(&mut self.buffers, input_indices, output_indices)
+            // Gather output pointers — clear() reuses existing capacity, no allocation.
+            self.process_output_ptrs.clear();
+            for &idx in output_indices {
+                self.process_output_ptrs.push(unsafe { buf_ptr.add(idx) });
+            }
+
+            // SAFETY:
+            // 1. *const AudioBuffer has the same layout as &AudioBuffer (both are pointers).
+            // 2. *mut AudioBuffer has the same layout as &mut AudioBuffer.
+            // 3. All pointers are valid — they point into self.buffers which outlives this call.
+            // 4. Input and output buffer sets are disjoint for any single node (DAG property).
+            // 5. Topological order ensures inputs are written before being read.
+            // 6. References exist only within this scope and do not escape.
+            let input_refs: &[&AudioBuffer] = unsafe {
+                std::slice::from_raw_parts(
+                    self.process_input_ptrs.as_ptr() as *const &AudioBuffer,
+                    self.process_input_ptrs.len(),
+                )
+            };
+            let output_refs: &mut [&mut AudioBuffer] = unsafe {
+                std::slice::from_raw_parts_mut(
+                    self.process_output_ptrs.as_mut_ptr() as *mut &mut AudioBuffer,
+                    self.process_output_ptrs.len(),
+                )
             };
 
-            self.nodes[node_idx].process(&input_refs, &mut output_refs, context);
+            self.nodes[node_idx].process(input_refs, output_refs, context);
         }
     }
 
@@ -187,16 +218,11 @@ impl AudioGraph {
     /// Downcast a node to a concrete type. Useful for accessing node-specific methods
     /// like `InputNode::fill_from_input()` or `OutputNode::read_output_interleaved()`.
     ///
-    /// # Safety
-    /// The caller must ensure the node at `index` is actually of type `T`.
+    /// Returns `None` if the node at `index` is not of type `T`.
     pub fn node_downcast_mut<T: AudioNode + 'static>(&mut self, index: usize) -> Option<&mut T> {
         self.nodes
             .get_mut(index)
-            .and_then(|n| {
-                let ptr = n.as_mut() as *mut dyn AudioNode;
-                // Use Any-style downcasting
-                unsafe { (ptr as *mut T).as_mut() }
-            })
+            .and_then(|n| n.as_any_mut().downcast_mut::<T>())
     }
 }
 
@@ -247,32 +273,6 @@ fn topological_sort(
     );
 
     result
-}
-
-/// Split buffer references into disjoint input (read-only) and output (read-write) sets.
-///
-/// # Safety
-/// The caller must ensure that input_indices and output_indices are disjoint
-/// (no buffer is both an input and output for the same node). This is guaranteed
-/// by the DAG structure of the audio graph.
-unsafe fn split_buffer_refs<'a>(
-    buffers: &'a mut [AudioBuffer],
-    input_indices: &[usize],
-    output_indices: &[usize],
-) -> (Vec<&'a AudioBuffer>, Vec<&'a mut AudioBuffer>) {
-    let buf_ptr = buffers.as_mut_ptr();
-
-    let inputs: Vec<&AudioBuffer> = input_indices
-        .iter()
-        .filter_map(|&i| unsafe { buf_ptr.add(i).as_ref() })
-        .collect();
-
-    let outputs: Vec<&mut AudioBuffer> = output_indices
-        .iter()
-        .filter_map(|&i| unsafe { buf_ptr.add(i).as_mut() })
-        .collect();
-
-    (inputs, outputs)
 }
 
 #[cfg(test)]
@@ -366,6 +366,7 @@ mod tests {
             playhead_samples: 0,
             tempo: 120.0,
             buffer_size: 256,
+            any_solo: false,
         };
 
         // Should not panic
