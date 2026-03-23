@@ -1,0 +1,33 @@
+# Build artifacts
+/target/
+**/target/
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.iml
+
+# Environment
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Rust
+**/*.rs.bk
+Cargo.lock
+
+# Audio files (don't commit large binaries)
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.aiff
+
+# VST3 plugins
+*.vst3
