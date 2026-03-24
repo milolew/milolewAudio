@@ -208,4 +208,50 @@ mod tests {
         let output = reader.drain_into_staging(256);
         assert_eq!(output.len(), 256);
     }
+
+    #[test]
+    fn overflow_counter_tracks_dropped_samples() {
+        let (mut capture, _reader) = create_input_capture(1, 256);
+
+        // Fill the ring buffer completely
+        let fill: Vec<f32> = vec![0.5; INPUT_CAPTURE_RING_SIZE];
+        capture.capture(&fill);
+        assert_eq!(capture.take_overflow_samples(), 0);
+
+        // Now push more — these should overflow
+        let overflow: Vec<f32> = vec![1.0; 500];
+        capture.capture(&overflow);
+        let dropped = capture.take_overflow_samples();
+        assert_eq!(dropped, 500);
+
+        // Counter should be reset after take
+        assert_eq!(capture.take_overflow_samples(), 0);
+    }
+
+    #[test]
+    fn e2e_recording_with_overflow_counter() {
+        // Simulate a full recording path: capture → overflow → verify counter
+        let (mut capture, mut reader) = create_input_capture(2, 256);
+
+        // Simulate 10 callbacks of stereo audio
+        for i in 0..10 {
+            let input: Vec<f32> = (0..512).map(|j| (i * 512 + j) as f32 * 0.001).collect();
+            capture.capture(&input);
+        }
+        // 10 * 512 = 5120 samples pushed, ring buffer is 16384, no overflow
+        assert_eq!(capture.take_overflow_samples(), 0);
+
+        // Drain and verify data integrity
+        let output = reader.drain_into_staging(256);
+        assert_eq!(output.len(), 512); // 256 frames * 2 channels
+                                       // First samples should match what we pushed
+        assert!((output[0] - 0.0).abs() < 1e-6);
+        assert!((output[1] - 0.001).abs() < 1e-6);
+
+        // Now overflow the buffer
+        let huge: Vec<f32> = vec![0.99; INPUT_CAPTURE_RING_SIZE + 1000];
+        capture.capture(&huge);
+        let dropped = capture.take_overflow_samples();
+        assert!(dropped > 0, "Expected some samples to be dropped");
+    }
 }
