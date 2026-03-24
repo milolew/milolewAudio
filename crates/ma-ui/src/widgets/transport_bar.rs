@@ -45,24 +45,29 @@ impl TransportBar {
 
                 Element::new(cx).class("separator");
 
-                // BPM display
+                // BPM display — Binding avoids format! on every transport poll
                 Label::new(cx, "BPM").class("bpm-label");
-                Label::new(cx, AppData::transport.map(|t| format!("{:.1}", t.tempo)))
-                    .class("tempo-display");
+                Binding::new(
+                    cx,
+                    AppData::transport.map(|t| (t.tempo * 10.0).round() as i64),
+                    |cx, tempo_key| {
+                        let raw = tempo_key.get(cx) as f64 / 10.0;
+                        Label::new(cx, &format!("{raw:.1}")).class("tempo-display");
+                    },
+                );
 
                 Element::new(cx).class("separator");
 
-                // Time signature
-                Label::new(
+                // Time signature — Binding avoids format! on every transport poll
+                Binding::new(
                     cx,
-                    AppData::transport.map(|t| {
-                        format!(
-                            "{}/{}",
-                            t.time_signature.numerator, t.time_signature.denominator
-                        )
-                    }),
-                )
-                .class("time-sig");
+                    AppData::transport
+                        .map(|t| (t.time_signature.numerator, t.time_signature.denominator)),
+                    |cx, ts_key| {
+                        let (num, den) = ts_key.get(cx);
+                        Label::new(cx, &format!("{num}/{den}")).class("time-sig");
+                    },
+                );
 
                 Element::new(cx).class("separator");
 
@@ -74,12 +79,15 @@ impl TransportBar {
 
                 Element::new(cx).class("separator");
 
-                // CPU meter
-                Label::new(
+                // CPU meter — Binding avoids format! on every mixer poll
+                Binding::new(
                     cx,
-                    AppData::mixer.map(|m| format!("CPU: {:.0}%", m.cpu_load * 100.0)),
-                )
-                .class("cpu-display");
+                    AppData::mixer.map(|m| (m.cpu_load * 100.0).round() as i32),
+                    |cx, cpu_key| {
+                        let pct = cpu_key.get(cx);
+                        Label::new(cx, &format!("CPU: {pct}%")).class("cpu-display");
+                    },
+                );
             })
             .class("transport-inner");
         })

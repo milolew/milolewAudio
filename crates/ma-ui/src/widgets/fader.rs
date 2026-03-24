@@ -178,7 +178,7 @@ impl View for Fader {
                     track_id: self.track_id,
                     volume: DEFAULT_VOLUME,
                 });
-                cx.needs_redraw();
+                cx.needs_redraw(); // REDRAW: on-change — volume reset
                 meta.consume();
             }
             WindowEvent::MouseMove(_, _) => {
@@ -197,7 +197,7 @@ impl View for Fader {
                         track_id: self.track_id,
                         volume: new_volume,
                     });
-                    cx.needs_redraw();
+                    cx.needs_redraw(); // REDRAW: on-change — volume drag
                     meta.consume();
                 }
             }
@@ -214,7 +214,7 @@ impl View for Fader {
         // Redraw on poll so the fader reflects external volume changes.
         event.map(|app_event, _meta| {
             if let crate::app_data::AppEvent::PollEngine = app_event {
-                cx.needs_redraw();
+                cx.needs_redraw(); // REDRAW: animated — external volume sync from engine poll
             }
         });
     }

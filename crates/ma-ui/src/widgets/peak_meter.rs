@@ -158,7 +158,7 @@ impl View for PeakMeter {
         // Continuously redraw when the engine is polled so meters animate.
         event.map(|app_event, _meta| {
             if let crate::app_data::AppEvent::PollEngine = app_event {
-                cx.needs_redraw();
+                cx.needs_redraw(); // REDRAW: animated — meter levels from engine poll
             }
         });
     }

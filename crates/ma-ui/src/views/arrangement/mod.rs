@@ -405,7 +405,7 @@ impl View for TrackLane {
                     }
                 }
 
-                cx.needs_redraw();
+                cx.needs_redraw(); // REDRAW: on-change — zoom/scroll
                 meta.consume();
             }
             WindowEvent::MouseDoubleClick(MouseButton::Left) => {

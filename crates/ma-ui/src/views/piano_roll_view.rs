@@ -571,7 +571,7 @@ impl View for PianoRollGrid {
                 }
 
                 cx.capture();
-                cx.needs_redraw();
+                cx.needs_redraw(); // REDRAW: on-change — note draw start
                 meta.consume();
             }
 
@@ -589,7 +589,7 @@ impl View for PianoRollGrid {
                     cx.emit(AppEvent::RemoveNote(note.id));
                 }
 
-                cx.needs_redraw();
+                cx.needs_redraw(); // REDRAW: on-change — note delete
                 meta.consume();
             }
 
@@ -621,7 +621,7 @@ impl View for PianoRollGrid {
                                 current_end_tick: snapped_end,
                             },
                         ));
-                        cx.needs_redraw();
+                        cx.needs_redraw(); // REDRAW: on-change — DrawingNote drag
                     }
 
                     PianoRollInteraction::DraggingNote {
@@ -641,7 +641,7 @@ impl View for PianoRollGrid {
                             new_start: clamped_start,
                             new_pitch,
                         });
-                        cx.needs_redraw();
+                        cx.needs_redraw(); // REDRAW: on-change — DraggingNote move
                     }
 
                     PianoRollInteraction::ResizingNote {
@@ -666,7 +666,7 @@ impl View for PianoRollGrid {
                                 note_id: *note_id,
                                 new_duration,
                             });
-                            cx.needs_redraw();
+                            cx.needs_redraw(); // REDRAW: on-change — ResizingNote right edge
                         }
                     }
 
@@ -699,7 +699,7 @@ impl View for PianoRollGrid {
                                 note_id: the_note_id,
                                 new_duration,
                             });
-                            cx.needs_redraw();
+                            cx.needs_redraw(); // REDRAW: on-change — ResizingNote left edge
                         }
                     }
 
@@ -751,7 +751,7 @@ impl View for PianoRollGrid {
 
                 cx.emit(AppEvent::UpdateInteraction(PianoRollInteraction::Idle));
                 cx.release();
-                cx.needs_redraw();
+                cx.needs_redraw(); // REDRAW: on-change — end interaction
                 meta.consume();
             }
 
@@ -769,7 +769,7 @@ impl View for PianoRollGrid {
                     cx.emit(AppEvent::ScrollPianoRollX(scroll_amount));
                 }
 
-                cx.needs_redraw();
+                cx.needs_redraw(); // REDRAW: on-change — zoom/scroll
                 meta.consume();
             }
 
