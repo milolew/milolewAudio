@@ -15,9 +15,11 @@ pub mod ids;
 pub mod parameters;
 pub mod time;
 
-pub use audio_buffer::AudioBuffer;
+pub use audio_buffer::{AudioBuffer, BufferError};
 pub use commands::{EngineCommand, TopologyCommand};
 pub use events::EngineEvent;
 pub use ids::{ClipId, NodeId, TrackId};
-pub use parameters::{TrackConfig, TransportState};
-pub use time::{FrameCount, SamplePos, Tick, PPQN};
+pub use parameters::{
+    ControllerNumber, MidiChannel, MidiNote, MidiRangeError, TrackConfig, TransportState, Velocity,
+};
+pub use time::{FrameCount, SamplePos, Tick, TimeError, PPQN};

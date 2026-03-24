@@ -7,12 +7,39 @@
 //! Conversion from/to cpal's interleaved format happens at the graph boundaries
 //! (InputNode and OutputNode).
 
+use thiserror::Error;
+
 /// Maximum number of frames per audio callback.
 /// This is the upper bound for buffer pre-allocation. Typical values: 64, 128, 256, 512, 1024.
 pub const MAX_BUFFER_SIZE: usize = 2048;
 
 /// Maximum number of audio channels per buffer.
 pub const MAX_CHANNELS: usize = 2;
+
+/// Errors that can occur when accessing audio buffer data.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum BufferError {
+    /// Channel index is out of range for this buffer.
+    #[error("channel index {requested} out of range (buffer has {available} channels)")]
+    ChannelOutOfRange {
+        requested: usize,
+        available: usize,
+    },
+
+    /// Frame count exceeds the maximum buffer size.
+    #[error("frame count {requested} exceeds maximum buffer size {max}")]
+    FramesExceedMax {
+        requested: usize,
+        max: usize,
+    },
+
+    /// Channel count exceeds the maximum channel count.
+    #[error("channel count {requested} exceeds maximum {max}")]
+    ChannelsExceedMax {
+        requested: usize,
+        max: usize,
+    },
+}
 
 /// A fixed-capacity, non-interleaved audio buffer.
 ///
@@ -35,14 +62,49 @@ pub struct AudioBuffer {
 
 impl AudioBuffer {
     /// Create a new silent (zeroed) audio buffer.
+    ///
+    /// # Panics
+    /// Panics if `channels > MAX_CHANNELS` or `frames > MAX_BUFFER_SIZE`.
     pub fn new(channels: usize, frames: u32) -> Self {
-        debug_assert!(channels <= MAX_CHANNELS);
-        debug_assert!((frames as usize) <= MAX_BUFFER_SIZE);
+        assert!(
+            channels <= MAX_CHANNELS,
+            "channel count {} exceeds maximum {}",
+            channels,
+            MAX_CHANNELS
+        );
+        assert!(
+            (frames as usize) <= MAX_BUFFER_SIZE,
+            "frame count {} exceeds maximum {}",
+            frames,
+            MAX_BUFFER_SIZE
+        );
         Self {
             data: [0.0; MAX_BUFFER_SIZE * MAX_CHANNELS],
             channels,
             frames,
         }
+    }
+
+    /// Try to create a new silent (zeroed) audio buffer, returning an error
+    /// if parameters are out of range.
+    pub fn try_new(channels: usize, frames: u32) -> Result<Self, BufferError> {
+        if channels > MAX_CHANNELS {
+            return Err(BufferError::ChannelsExceedMax {
+                requested: channels,
+                max: MAX_CHANNELS,
+            });
+        }
+        if (frames as usize) > MAX_BUFFER_SIZE {
+            return Err(BufferError::FramesExceedMax {
+                requested: frames as usize,
+                max: MAX_BUFFER_SIZE,
+            });
+        }
+        Ok(Self {
+            data: [0.0; MAX_BUFFER_SIZE * MAX_CHANNELS],
+            channels,
+            frames,
+        })
     }
 
     /// Create a stereo buffer (the most common case).
@@ -68,26 +130,113 @@ impl AudioBuffer {
     }
 
     /// Set the number of valid frames (e.g., when the callback provides fewer frames).
+    ///
+    /// # Panics
+    /// Panics if `frames > MAX_BUFFER_SIZE`.
     #[inline]
     pub fn set_frames(&mut self, frames: u32) {
-        debug_assert!((frames as usize) <= MAX_BUFFER_SIZE);
+        assert!(
+            (frames as usize) <= MAX_BUFFER_SIZE,
+            "frame count {} exceeds maximum {}",
+            frames,
+            MAX_BUFFER_SIZE
+        );
         self.frames = frames;
     }
 
+    /// Try to set the number of valid frames, returning an error if out of range.
+    #[inline]
+    pub fn try_set_frames(&mut self, frames: u32) -> Result<(), BufferError> {
+        if (frames as usize) > MAX_BUFFER_SIZE {
+            return Err(BufferError::FramesExceedMax {
+                requested: frames as usize,
+                max: MAX_BUFFER_SIZE,
+            });
+        }
+        self.frames = frames;
+        Ok(())
+    }
+
     /// Get an immutable slice of samples for a specific channel.
+    ///
+    /// # Panics
+    /// Panics if `ch >= self.channels()`.
     #[inline]
     pub fn channel(&self, ch: usize) -> &[f32] {
-        debug_assert!(ch < self.channels);
+        assert!(
+            ch < self.channels,
+            "channel index {} out of range (buffer has {} channels)",
+            ch,
+            self.channels
+        );
         let start = ch * MAX_BUFFER_SIZE;
         &self.data[start..start + self.frames as usize]
     }
 
     /// Get a mutable slice of samples for a specific channel.
+    ///
+    /// # Panics
+    /// Panics if `ch >= self.channels()`.
     #[inline]
     pub fn channel_mut(&mut self, ch: usize) -> &mut [f32] {
-        debug_assert!(ch < self.channels);
+        assert!(
+            ch < self.channels,
+            "channel index {} out of range (buffer has {} channels)",
+            ch,
+            self.channels
+        );
         let start = ch * MAX_BUFFER_SIZE;
         &mut self.data[start..start + self.frames as usize]
+    }
+
+    /// Try to get an immutable slice of samples for a specific channel.
+    /// Returns `Err(BufferError::ChannelOutOfRange)` if the channel index is invalid.
+    #[inline]
+    pub fn try_channel(&self, ch: usize) -> Result<&[f32], BufferError> {
+        if ch >= self.channels {
+            return Err(BufferError::ChannelOutOfRange {
+                requested: ch,
+                available: self.channels,
+            });
+        }
+        let start = ch * MAX_BUFFER_SIZE;
+        Ok(&self.data[start..start + self.frames as usize])
+    }
+
+    /// Try to get a mutable slice of samples for a specific channel.
+    /// Returns `Err(BufferError::ChannelOutOfRange)` if the channel index is invalid.
+    #[inline]
+    pub fn try_channel_mut(&mut self, ch: usize) -> Result<&mut [f32], BufferError> {
+        if ch >= self.channels {
+            return Err(BufferError::ChannelOutOfRange {
+                requested: ch,
+                available: self.channels,
+            });
+        }
+        let start = ch * MAX_BUFFER_SIZE;
+        Ok(&mut self.data[start..start + self.frames as usize])
+    }
+
+    /// Get a single sample value by channel and frame index.
+    /// Returns `None` if either index is out of range.
+    #[inline]
+    pub fn get(&self, ch: usize, frame: usize) -> Option<&f32> {
+        if ch >= self.channels || frame >= self.frames as usize {
+            return None;
+        }
+        let index = ch * MAX_BUFFER_SIZE + frame;
+        Some(&self.data[index])
+    }
+
+    /// Get a mutable reference to a single sample by channel and frame index.
+    /// Returns `None` if either index is out of range.
+    #[inline]
+    pub fn get_mut(&mut self, ch: usize, frame: usize) -> Option<&mut f32> {
+        if ch >= self.channels || frame >= self.frames as usize {
+            return None;
+        }
+        let index = ch * MAX_BUFFER_SIZE + frame;
+        Some(&mut self.data[index])
     }
 
     /// Fill all channels with silence (0.0).
@@ -344,5 +493,351 @@ mod tests {
         for &s in buf.channel(1) {
             assert!((s - expected).abs() < 1e-5);
         }
+    }
+
+    // ── C6: Edge-case tests ─────────────────────────────────────────
+
+    #[test]
+    fn zero_frames_buffer() {
+        let buf = AudioBuffer::new(2, 0);
+        assert_eq!(buf.channels(), 2);
+        assert_eq!(buf.frames(), 0);
+        // Channel slices should be empty but not panic.
+        assert!(buf.channel(0).is_empty());
+        assert!(buf.channel(1).is_empty());
+        // Peak levels should all be 0.
+        assert_eq!(buf.peak_levels(), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn zero_channels_buffer() {
+        // Zero channels is technically valid (no audio data).
+        let buf = AudioBuffer::new(0, 256);
+        assert_eq!(buf.channels(), 0);
+        assert_eq!(buf.frames(), 256);
+        // Peak levels should be 0 for all (unused) channel slots.
+        assert_eq!(buf.peak_levels(), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn max_capacity_buffer() {
+        let buf = AudioBuffer::new(MAX_CHANNELS, MAX_BUFFER_SIZE as u32);
+        assert_eq!(buf.channels(), MAX_CHANNELS);
+        assert_eq!(buf.frames(), MAX_BUFFER_SIZE as u32);
+        assert_eq!(buf.channel(0).len(), MAX_BUFFER_SIZE);
+        assert_eq!(buf.channel(1).len(), MAX_BUFFER_SIZE);
+    }
+
+    #[test]
+    #[should_panic(expected = "channel count")]
+    fn new_exceeding_max_channels_panics() {
+        AudioBuffer::new(MAX_CHANNELS + 1, 256);
+    }
+
+    #[test]
+    #[should_panic(expected = "frame count")]
+    fn new_exceeding_max_frames_panics() {
+        AudioBuffer::new(2, MAX_BUFFER_SIZE as u32 + 1);
+    }
+
+    #[test]
+    fn try_new_exceeding_max_channels_returns_error() {
+        let result = AudioBuffer::try_new(MAX_CHANNELS + 1, 256);
+        assert!(matches!(result, Err(BufferError::ChannelsExceedMax { .. })));
+    }
+
+    #[test]
+    fn try_new_exceeding_max_frames_returns_error() {
+        let result = AudioBuffer::try_new(2, MAX_BUFFER_SIZE as u32 + 1);
+        assert!(matches!(result, Err(BufferError::FramesExceedMax { .. })));
+    }
+
+    #[test]
+    fn try_new_valid_returns_ok() {
+        let result = AudioBuffer::try_new(2, 256);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[should_panic(expected = "channel index")]
+    fn channel_out_of_bounds_panics() {
+        let buf = AudioBuffer::mono(4);
+        let _ = buf.channel(1); // mono only has channel 0
+    }
+
+    #[test]
+    #[should_panic(expected = "channel index")]
+    fn channel_mut_out_of_bounds_panics() {
+        let mut buf = AudioBuffer::mono(4);
+        let _ = buf.channel_mut(1);
+    }
+
+    #[test]
+    fn try_channel_out_of_bounds_returns_error() {
+        let buf = AudioBuffer::mono(4);
+        let result = buf.try_channel(1);
+        assert!(matches!(
+            result,
+            Err(BufferError::ChannelOutOfRange {
+                requested: 1,
+                available: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn try_channel_mut_out_of_bounds_returns_error() {
+        let mut buf = AudioBuffer::mono(4);
+        let result = buf.try_channel_mut(1);
+        assert!(matches!(
+            result,
+            Err(BufferError::ChannelOutOfRange {
+                requested: 1,
+                available: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn try_channel_valid_returns_ok() {
+        let buf = AudioBuffer::stereo(4);
+        assert!(buf.try_channel(0).is_ok());
+        assert!(buf.try_channel(1).is_ok());
+    }
+
+    #[test]
+    fn get_valid_sample() {
+        let mut buf = AudioBuffer::stereo(4);
+        buf.channel_mut(0).copy_from_slice(&[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(buf.get(0, 0), Some(&1.0));
+        assert_eq!(buf.get(0, 3), Some(&4.0));
+    }
+
+    #[test]
+    fn get_out_of_bounds_returns_none() {
+        let buf = AudioBuffer::mono(4);
+        // Channel out of range.
+        assert_eq!(buf.get(1, 0), None);
+        // Frame out of range.
+        assert_eq!(buf.get(0, 4), None);
+        // Both out of range.
+        assert_eq!(buf.get(5, 100), None);
+    }
+
+    #[test]
+    fn get_mut_modifies_sample() {
+        let mut buf = AudioBuffer::mono(4);
+        if let Some(sample) = buf.get_mut(0, 2) {
+            *sample = 0.99;
+        }
+        assert_eq!(buf.get(0, 2), Some(&0.99));
+    }
+
+    #[test]
+    fn get_mut_out_of_bounds_returns_none() {
+        let mut buf = AudioBuffer::mono(4);
+        assert_eq!(buf.get_mut(1, 0), None);
+        assert_eq!(buf.get_mut(0, 4), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "frame count")]
+    fn set_frames_exceeding_max_panics() {
+        let mut buf = AudioBuffer::stereo(256);
+        buf.set_frames(MAX_BUFFER_SIZE as u32 + 1);
+    }
+
+    #[test]
+    fn try_set_frames_exceeding_max_returns_error() {
+        let mut buf = AudioBuffer::stereo(256);
+        let result = buf.try_set_frames(MAX_BUFFER_SIZE as u32 + 1);
+        assert!(matches!(result, Err(BufferError::FramesExceedMax { .. })));
+    }
+
+    #[test]
+    fn try_set_frames_valid() {
+        let mut buf = AudioBuffer::stereo(256);
+        assert!(buf.try_set_frames(128).is_ok());
+        assert_eq!(buf.frames(), 128);
+    }
+
+    #[test]
+    fn copy_from_mismatched_channels() {
+        // Stereo copies from mono: extra channel zeroed.
+        let mut mono = AudioBuffer::mono(4);
+        mono.channel_mut(0).copy_from_slice(&[1.0, 2.0, 3.0, 4.0]);
+
+        let mut stereo = AudioBuffer::stereo(4);
+        stereo.channel_mut(0).fill(9.0);
+        stereo.channel_mut(1).fill(9.0);
+        stereo.copy_from(&mono);
+
+        assert_eq!(stereo.channel(0), &[1.0, 2.0, 3.0, 4.0]);
+        // Channel 1 should be zeroed since mono source doesn't have it.
+        assert_eq!(stereo.channel(1), &[0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn copy_from_mismatched_frames() {
+        let mut short = AudioBuffer::mono(2);
+        short.channel_mut(0).copy_from_slice(&[1.0, 2.0]);
+
+        let mut long = AudioBuffer::mono(4);
+        long.channel_mut(0).fill(9.0);
+        long.copy_from(&short);
+
+        // First 2 frames copied, remaining 2 zeroed.
+        assert_eq!(long.channel(0), &[1.0, 2.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn clear_zeros_all_data() {
+        let mut buf = AudioBuffer::stereo(4);
+        buf.channel_mut(0).fill(1.0);
+        buf.channel_mut(1).fill(-1.0);
+        buf.clear();
+        assert_eq!(buf.channel(0), &[0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(buf.channel(1), &[0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn clear_zero_frames_does_not_panic() {
+        let mut buf = AudioBuffer::new(2, 0);
+        buf.clear(); // Should not panic.
+    }
+
+    #[test]
+    fn from_interleaved_short_input_clears_buffer() {
+        let mut buf = AudioBuffer::stereo(4);
+        buf.channel_mut(0).fill(1.0);
+        // Input is too short (only 4 samples for 4 frames, 2 channels = needs 8).
+        buf.from_interleaved(&[0.1, 0.2, 0.3, 0.4], 2, 4);
+        // Buffer should be cleared.
+        assert_eq!(buf.channel(0), &[0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn to_interleaved_short_output_fills_zeros() {
+        let mut buf = AudioBuffer::stereo(4);
+        buf.channel_mut(0).fill(1.0);
+        buf.channel_mut(1).fill(0.5);
+        // Output is too short.
+        let mut output = vec![9.0f32; 4];
+        buf.to_interleaved(&mut output);
+        // Should be zeroed since the output is too small.
+        assert_eq!(output, vec![0.0; 4]);
+    }
+
+    #[test]
+    fn clamp_limits_values() {
+        let mut buf = AudioBuffer::mono(4);
+        buf.channel_mut(0).copy_from_slice(&[-2.0, 1.5, 0.5, -0.3]);
+        buf.clamp();
+        assert_eq!(buf.channel(0), &[-1.0, 1.0, 0.5, -0.3]);
+    }
+
+    #[test]
+    fn apply_pan_full_left() {
+        let mut buf = AudioBuffer::stereo(4);
+        buf.channel_mut(0).fill(1.0);
+        buf.channel_mut(1).fill(1.0);
+        buf.apply_pan(-1.0);
+        // Full left: left should be ~1.0, right should be ~0.0.
+        for &s in buf.channel(0) {
+            assert!((s - 1.0).abs() < 1e-5);
+        }
+        for &s in buf.channel(1) {
+            assert!(s.abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn apply_pan_full_right() {
+        let mut buf = AudioBuffer::stereo(4);
+        buf.channel_mut(0).fill(1.0);
+        buf.channel_mut(1).fill(1.0);
+        buf.apply_pan(1.0);
+        // Full right: left should be ~0.0, right should be ~1.0.
+        for &s in buf.channel(0) {
+            assert!(s.abs() < 1e-5);
+        }
+        for &s in buf.channel(1) {
+            assert!((s - 1.0).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn apply_pan_mono_is_noop() {
+        let mut buf = AudioBuffer::mono(4);
+        buf.channel_mut(0).copy_from_slice(&[1.0, 2.0, 3.0, 4.0]);
+        buf.apply_pan(0.5);
+        // Pan should have no effect on mono buffers.
+        assert_eq!(buf.channel(0), &[1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn default_buffer_is_stereo_256() {
+        let buf = AudioBuffer::default();
+        assert_eq!(buf.channels(), 2);
+        assert_eq!(buf.frames(), 256);
+    }
+
+    #[test]
+    fn debug_format_shows_channels_and_frames() {
+        let buf = AudioBuffer::stereo(128);
+        let debug = format!("{:?}", buf);
+        assert!(debug.contains("channels: 2"));
+        assert!(debug.contains("frames: 128"));
+    }
+
+    #[test]
+    fn mix_from_zero_frames() {
+        let mut a = AudioBuffer::mono(0);
+        let b = AudioBuffer::mono(0);
+        a.mix_from(&b); // Should not panic.
+    }
+
+    #[test]
+    fn peak_levels_zero_frames() {
+        let buf = AudioBuffer::stereo(0);
+        assert_eq!(buf.peak_levels(), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn gain_zero_silences_buffer() {
+        let mut buf = AudioBuffer::mono(4);
+        buf.channel_mut(0).copy_from_slice(&[1.0, -1.0, 0.5, -0.5]);
+        buf.apply_gain(0.0);
+        assert_eq!(buf.channel(0), &[0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn buffer_error_display() {
+        let err = BufferError::ChannelOutOfRange {
+            requested: 5,
+            available: 2,
+        };
+        assert_eq!(
+            err.to_string(),
+            "channel index 5 out of range (buffer has 2 channels)"
+        );
+
+        let err = BufferError::FramesExceedMax {
+            requested: 4096,
+            max: 2048,
+        };
+        assert_eq!(
+            err.to_string(),
+            "frame count 4096 exceeds maximum buffer size 2048"
+        );
+
+        let err = BufferError::ChannelsExceedMax {
+            requested: 8,
+            max: 2,
+        };
+        assert_eq!(
+            err.to_string(),
+            "channel count 8 exceeds maximum 2"
+        );
     }
 }
