@@ -12,6 +12,7 @@ pub mod commands;
 pub mod device;
 pub mod events;
 pub mod ids;
+pub mod midi_clip;
 pub mod parameters;
 pub mod time;
 
@@ -19,6 +20,7 @@ pub use audio_buffer::{AudioBuffer, BufferError};
 pub use commands::{EngineCommand, TopologyCommand};
 pub use events::EngineEvent;
 pub use ids::{ClipId, NodeId, TrackId};
+pub use midi_clip::{MidiClip, MidiClipRef};
 pub use parameters::{
     ControllerNumber, MidiChannel, MidiNote, MidiRangeError, TrackConfig, TransportState, Velocity,
 };

@@ -215,11 +215,7 @@ pub enum MidiMessage {
 
 impl MidiMessage {
     /// Create a validated NoteOn message.
-    pub fn note_on(
-        channel: MidiChannel,
-        note: MidiNote,
-        velocity: Velocity,
-    ) -> Self {
+    pub fn note_on(channel: MidiChannel, note: MidiNote, velocity: Velocity) -> Self {
         Self::NoteOn {
             channel: channel.value(),
             note: note.value(),
@@ -228,11 +224,7 @@ impl MidiMessage {
     }
 
     /// Create a validated NoteOff message.
-    pub fn note_off(
-        channel: MidiChannel,
-        note: MidiNote,
-        velocity: Velocity,
-    ) -> Self {
+    pub fn note_off(channel: MidiChannel, note: MidiNote, velocity: Velocity) -> Self {
         Self::NoteOff {
             channel: channel.value(),
             note: note.value(),
@@ -241,11 +233,7 @@ impl MidiMessage {
     }
 
     /// Create a validated ControlChange message.
-    pub fn control_change(
-        channel: MidiChannel,
-        controller: ControllerNumber,
-        value: u8,
-    ) -> Self {
+    pub fn control_change(channel: MidiChannel, controller: ControllerNumber, value: u8) -> Self {
         Self::ControlChange {
             channel: channel.value(),
             controller: controller.value(),
@@ -382,10 +370,7 @@ mod tests {
         );
 
         let err = MidiNote::try_from(128).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "MIDI note 128 out of range (valid: 0-127)"
-        );
+        assert_eq!(err.to_string(), "MIDI note 128 out of range (valid: 0-127)");
 
         let err = Velocity::try_from(200).unwrap_err();
         assert_eq!(

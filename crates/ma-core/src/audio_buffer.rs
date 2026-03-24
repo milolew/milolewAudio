@@ -21,24 +21,15 @@ pub const MAX_CHANNELS: usize = 2;
 pub enum BufferError {
     /// Channel index is out of range for this buffer.
     #[error("channel index {requested} out of range (buffer has {available} channels)")]
-    ChannelOutOfRange {
-        requested: usize,
-        available: usize,
-    },
+    ChannelOutOfRange { requested: usize, available: usize },
 
     /// Frame count exceeds the maximum buffer size.
     #[error("frame count {requested} exceeds maximum buffer size {max}")]
-    FramesExceedMax {
-        requested: usize,
-        max: usize,
-    },
+    FramesExceedMax { requested: usize, max: usize },
 
     /// Channel count exceeds the maximum channel count.
     #[error("channel count {requested} exceeds maximum {max}")]
-    ChannelsExceedMax {
-        requested: usize,
-        max: usize,
-    },
+    ChannelsExceedMax { requested: usize, max: usize },
 }
 
 /// A fixed-capacity, non-interleaved audio buffer.
@@ -835,9 +826,6 @@ mod tests {
             requested: 8,
             max: 2,
         };
-        assert_eq!(
-            err.to_string(),
-            "channel count 8 exceeds maximum 2"
-        );
+        assert_eq!(err.to_string(), "channel count 8 exceeds maximum 2");
     }
 }

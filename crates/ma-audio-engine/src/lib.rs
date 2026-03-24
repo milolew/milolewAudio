@@ -25,5 +25,6 @@ pub mod disk_io;
 pub mod engine;
 pub mod graph;
 pub mod input_capture;
+pub mod midi_recorder;
 pub mod track;
 pub mod transport;
