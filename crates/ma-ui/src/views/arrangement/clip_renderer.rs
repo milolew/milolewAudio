@@ -168,7 +168,7 @@ fn draw_midi_notes(
         // Y position: higher pitches at top
         let pitch_offset = (max_pitch - note.pitch) as f32 + 1.0;
         let note_y = note_area_y + (pitch_offset / pitch_range) * note_area_h;
-        let note_h = (note_area_h / pitch_range).clamp(1.0, 4.0);
+        let note_h = (note_area_h / pitch_range).clamp(1.0, 4.0 * params.scale);
 
         if note_x + note_w >= geom.draw_x && note_x <= geom.draw_end_x {
             canvas.draw_rect(
