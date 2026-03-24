@@ -153,12 +153,14 @@ impl AudioNode for TrackNode {
         };
 
         // If muted, output silence
+        // ORDERING: Relaxed OK — single-value eventual consistency (UI parameter)
         if self.mute.load(Ordering::Relaxed) {
             output.clear();
             return;
         }
 
         // Solo logic: if any track is soloed and this track is NOT soloed, output silence
+        // ORDERING: Relaxed OK — single-value eventual consistency (UI parameter)
         if context.any_solo && !self.solo.load(Ordering::Relaxed) {
             output.clear();
             return;
@@ -173,21 +175,26 @@ impl AudioNode for TrackNode {
         }
 
         // Push to recording buffer if armed and recording
+        // ORDERING: Relaxed OK — record_armed is single-value eventual consistency;
+        // is_recording is written with Release but read here on audio thread (self-read OK with Relaxed)
         if self.record_armed.load(Ordering::Relaxed) && self.is_recording.load(Ordering::Relaxed) {
             // Record the raw input (pre-fader) for clean recording
             if let Some(input) = inputs.first() {
                 let dropped = self.push_to_record_buffer(input);
                 if dropped > 0 {
+                    // ORDERING: Relaxed OK — single-value flag, read/reset in audio callback
                     self.record_overflow.store(true, Ordering::Relaxed);
                 }
             }
         }
 
         // Apply volume
+        // ORDERING: Relaxed OK — single-value eventual consistency (UI parameter)
         let vol = self.volume.load(Ordering::Relaxed);
         output.apply_gain(vol);
 
         // Apply pan
+        // ORDERING: Relaxed OK — single-value eventual consistency (UI parameter)
         let pan = self.pan.load(Ordering::Relaxed);
         if pan.abs() > 0.001 {
             output.apply_pan(pan);

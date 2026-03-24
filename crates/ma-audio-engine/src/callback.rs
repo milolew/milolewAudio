@@ -128,6 +128,7 @@ pub fn audio_callback(state: &mut CallbackState, output: &mut [f32], num_frames:
     let any_solo = state
         .tracks
         .iter()
+        // ORDERING: Relaxed OK — single-value eventual consistency (UI parameter)
         .any(|t| t.solo.load(std::sync::atomic::Ordering::Relaxed));
 
     // 5. Build process context
@@ -152,6 +153,7 @@ pub fn audio_callback(state: &mut CallbackState, output: &mut [f32], num_frames:
             {
                 if track_node
                     .record_overflow
+                    // ORDERING: Relaxed OK — single-value flag, set/reset within audio thread
                     .swap(false, std::sync::atomic::Ordering::Relaxed)
                 {
                     let _ = state

@@ -83,21 +83,25 @@ pub fn process_commands(
             // ── Track parameters ──
             EngineCommand::SetTrackVolume { track_id, volume } => {
                 if let Some(track) = find_track(tracks, track_id) {
+                    // ORDERING: Relaxed OK — single-value eventual consistency (UI parameter)
                     track.volume.store(volume, Ordering::Relaxed);
                 }
             }
             EngineCommand::SetTrackPan { track_id, pan } => {
                 if let Some(track) = find_track(tracks, track_id) {
+                    // ORDERING: Relaxed OK — single-value eventual consistency (UI parameter)
                     track.pan.store(pan, Ordering::Relaxed);
                 }
             }
             EngineCommand::SetTrackMute { track_id, mute } => {
                 if let Some(track) = find_track(tracks, track_id) {
+                    // ORDERING: Relaxed OK — single-value eventual consistency (UI parameter)
                     track.mute.store(mute, Ordering::Relaxed);
                 }
             }
             EngineCommand::SetTrackSolo { track_id, solo } => {
                 if let Some(track) = find_track(tracks, track_id) {
+                    // ORDERING: Relaxed OK — single-value eventual consistency (UI parameter)
                     track.solo.store(solo, Ordering::Relaxed);
                 }
             }
@@ -105,6 +109,7 @@ pub fn process_commands(
             // ── Recording ──
             EngineCommand::ArmTrack { track_id, armed } => {
                 if let Some(track) = find_track(tracks, track_id) {
+                    // ORDERING: Relaxed OK — single-value eventual consistency (UI parameter)
                     track.record_armed.store(armed, Ordering::Relaxed);
                 }
             }
@@ -155,6 +160,7 @@ fn find_track(tracks: &[crate::track::Track], id: TrackId) -> Option<&crate::tra
 #[inline]
 fn set_track_node_recording(graph: &mut AudioGraph, graph_index: usize, recording: bool) {
     if let Some(track_node) = graph.node_downcast_mut::<TrackNode>(graph_index) {
-        track_node.is_recording.store(recording, Ordering::Relaxed);
+        // ORDERING: Release — cross-thread state read by UI with Acquire
+        track_node.is_recording.store(recording, Ordering::Release);
     }
 }
