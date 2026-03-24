@@ -8,8 +8,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use ma_core::ids::{NodeId, TrackId};
-use ma_core::parameters::TrackConfig;
+use ma_core::parameters::{TrackConfig, TrackType};
 
+use crate::graph::node::AudioNode;
+use crate::graph::nodes::midi_player::MidiPlayerNode;
 use crate::graph::nodes::track_node::{AtomicF32, TrackNode};
 use crate::graph::nodes::wav_player::WavPlayerNode;
 
@@ -40,6 +42,11 @@ pub struct Track {
     /// via `find_node_index()` on every audio callback.
     pub track_node_graph_index: Option<usize>,
 
+    /// Cached index of the player node (WavPlayerNode or MidiPlayerNode)
+    /// in the audio graph. Used by the command processor to downcast and
+    /// install/remove clips at runtime.
+    pub player_node_graph_index: Option<usize>,
+
     /// Shared parameter handles (UI reads these atomics).
     pub volume: Arc<AtomicF32>,
     pub pan: Arc<AtomicF32>,
@@ -50,8 +57,8 @@ pub struct Track {
 
 /// Result of creating a new track — contains the nodes and recording consumer.
 pub struct TrackCreationResult {
-    /// The WAV player node for this track.
-    pub player_node: WavPlayerNode,
+    /// The player node for this track (WavPlayerNode for audio, MidiPlayerNode for MIDI).
+    pub player_node: Box<dyn AudioNode>,
 
     /// The track processing node (gain, pan, recording).
     pub track_node: TrackNode,
@@ -88,8 +95,11 @@ pub fn create_track(
         (None, None)
     };
 
-    // Create the WAV player node
-    let player_node = WavPlayerNode::new(player_node_id, MAX_CLIPS_PER_TRACK);
+    // Create the player node based on track type
+    let player_node: Box<dyn AudioNode> = match config.track_type {
+        TrackType::Audio => Box::new(WavPlayerNode::new(player_node_id, MAX_CLIPS_PER_TRACK)),
+        TrackType::Midi => Box::new(MidiPlayerNode::new(player_node_id, MAX_CLIPS_PER_TRACK)),
+    };
 
     // Create the track processing node
     let track_node = TrackNode::new(track_node_id, track_id, record_producer);
@@ -113,6 +123,7 @@ pub fn create_track(
         player_node_id,
         track_node_id,
         track_node_graph_index: None, // populated after graph construction
+        player_node_graph_index: None, // populated after graph construction
         volume,
         pan,
         mute,
@@ -142,6 +153,7 @@ mod tests {
                 input_enabled: true,
                 initial_volume: 0.8,
                 initial_pan: -0.5,
+                track_type: TrackType::Audio,
             },
             NodeId(0),
             NodeId(1),
@@ -165,5 +177,47 @@ mod tests {
         );
 
         assert!(result.record_consumer.is_none());
+    }
+
+    #[test]
+    fn create_midi_track_returns_midi_player_node() {
+        let result = create_track(
+            TrackId::new(),
+            TrackConfig {
+                name: "MIDI 1".into(),
+                track_type: TrackType::Midi,
+                ..TrackConfig::default()
+            },
+            NodeId(10),
+            NodeId(11),
+        );
+
+        // Verify the player node is a MidiPlayerNode via downcast
+        assert!(result
+            .player_node
+            .as_any()
+            .downcast_ref::<MidiPlayerNode>()
+            .is_some());
+        assert_eq!(result.track.player_node_id, NodeId(10));
+    }
+
+    #[test]
+    fn create_audio_track_returns_wav_player_node() {
+        let result = create_track(
+            TrackId::new(),
+            TrackConfig {
+                name: "Audio 1".into(),
+                track_type: TrackType::Audio,
+                ..TrackConfig::default()
+            },
+            NodeId(20),
+            NodeId(21),
+        );
+
+        assert!(result
+            .player_node
+            .as_any()
+            .downcast_ref::<WavPlayerNode>()
+            .is_some());
     }
 }

@@ -90,6 +90,11 @@ impl MidiPlayerNode {
         }
     }
 
+    /// Number of clips currently loaded.
+    pub fn clip_count(&self) -> usize {
+        self.clips.len()
+    }
+
     /// Convert MIDI note number to frequency (Hz) using A440 equal temperament.
     #[inline]
     fn note_to_freq(note: u8) -> f64 {

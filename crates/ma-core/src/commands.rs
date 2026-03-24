@@ -69,6 +69,20 @@ pub enum EngineCommand {
     /// Stop recording on all armed tracks.
     StopRecording,
 
+    // ── Clip management (forwarded from topology processor) ────
+    /// Install a MIDI clip into a track's MidiPlayerNode.
+    /// The `Arc<MidiClip>` is safe on the audio thread because the UI always holds
+    /// another reference — the audio thread never drops the last Arc.
+    InstallMidiClip {
+        track_id: TrackId,
+        clip_id: ClipId,
+        clip: Arc<crate::midi_clip::MidiClip>,
+        start_tick: Tick,
+    },
+
+    /// Remove a MIDI clip from a track's MidiPlayerNode.
+    RemoveMidiClipFromPlayer { track_id: TrackId, clip_id: ClipId },
+
     // ── Engine lifecycle ───────────────────────────────────────
     /// Gracefully shut down the audio engine.
     Shutdown,

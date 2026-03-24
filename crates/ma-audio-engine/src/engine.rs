@@ -215,7 +215,7 @@ pub fn build_engine(
         });
 
         // Add nodes to the graph
-        all_nodes.push(Box::new(result.player_node));
+        all_nodes.push(result.player_node);
         all_nodes.push(Box::new(result.track_node));
 
         tracks.push(result.track);
@@ -245,9 +245,10 @@ pub fn build_engine(
     let input_node_graph_index = graph.find_node_index(input_node_id);
     let output_node_graph_index = graph.find_node_index(output_node_id);
 
-    // Cache track node graph indices to avoid O(N) scans in the audio callback
+    // Cache graph indices to avoid O(N) scans in the audio callback
     for track in &mut tracks {
         track.track_node_graph_index = graph.find_node_index(track.track_node_id);
+        track.player_node_graph_index = graph.find_node_index(track.player_node_id);
     }
 
     let callback_state = CallbackState {
@@ -314,6 +315,7 @@ mod tests {
                         input_enabled: true,
                         initial_volume: 0.8,
                         initial_pan: 0.0,
+                        track_type: ma_core::parameters::TrackType::Audio,
                     },
                 ),
                 (
@@ -324,6 +326,7 @@ mod tests {
                         input_enabled: false,
                         initial_volume: 1.0,
                         initial_pan: 0.0,
+                        track_type: ma_core::parameters::TrackType::Audio,
                     },
                 ),
             ],

@@ -13,6 +13,7 @@ use crate::callback::push_event;
 use ma_core::ids::TrackId;
 use ma_core::parameters::TransportState;
 
+use crate::graph::nodes::midi_player::MidiPlayerNode;
 use crate::graph::nodes::track_node::TrackNode;
 use crate::graph::AudioGraph;
 use crate::transport::Transport;
@@ -150,6 +151,35 @@ pub fn process_commands(
                 );
             }
 
+            // ── Clip management ──
+            EngineCommand::InstallMidiClip {
+                track_id,
+                clip_id,
+                clip,
+                start_tick,
+            } => {
+                if let Some(track) = find_track(tracks, track_id) {
+                    if let Some(idx) = track.player_node_graph_index {
+                        if let Some(player) = graph.node_downcast_mut::<MidiPlayerNode>(idx) {
+                            player.add_clip(ma_core::midi_clip::MidiClipRef {
+                                clip_id,
+                                clip,
+                                start_tick,
+                            });
+                        }
+                    }
+                }
+            }
+            EngineCommand::RemoveMidiClipFromPlayer { track_id, clip_id } => {
+                if let Some(track) = find_track(tracks, track_id) {
+                    if let Some(idx) = track.player_node_graph_index {
+                        if let Some(player) = graph.node_downcast_mut::<MidiPlayerNode>(idx) {
+                            player.remove_clip(clip_id);
+                        }
+                    }
+                }
+            }
+
             // ── Lifecycle ──
             EngineCommand::Shutdown => {
                 shutdown = true;
@@ -200,6 +230,7 @@ mod tests {
                     input_enabled: true,
                     initial_volume: 1.0,
                     initial_pan: 0.0,
+                    track_type: ma_core::parameters::TrackType::Audio,
                 },
             )],
         };
@@ -383,5 +414,89 @@ mod tests {
             .unwrap();
         // Should not panic
         dispatch(&mut state);
+    }
+
+    /// Build a minimal engine with one MIDI track for testing clip installation.
+    fn test_engine_midi() -> (
+        rtrb::Producer<EngineCommand>,
+        rtrb::Consumer<EngineEvent>,
+        crate::callback::CallbackState,
+    ) {
+        let track_id = TrackId::new();
+        let config = EngineConfig {
+            sample_rate: 48000,
+            buffer_size: 256,
+            initial_tracks: vec![(
+                track_id,
+                ma_core::parameters::TrackConfig {
+                    name: "MIDI 1".into(),
+                    channel_count: 2,
+                    input_enabled: false,
+                    initial_volume: 1.0,
+                    initial_pan: 0.0,
+                    track_type: ma_core::parameters::TrackType::Midi,
+                },
+            )],
+        };
+        let (state, handle) = build_engine(config).unwrap();
+        (handle.command_producer, handle.event_consumer, state)
+    }
+
+    #[test]
+    fn install_midi_clip_command() {
+        let (mut producer, _, mut state) = test_engine_midi();
+        let track_id = state.tracks[0].id;
+        let clip_id = ma_core::ids::ClipId::new();
+        let clip = std::sync::Arc::new(ma_core::midi_clip::MidiClip::new(vec![], 960));
+
+        producer
+            .push(EngineCommand::InstallMidiClip {
+                track_id,
+                clip_id,
+                clip,
+                start_tick: 0,
+            })
+            .unwrap();
+        dispatch(&mut state);
+
+        // Verify clip was installed by checking the MidiPlayerNode
+        let idx = state.tracks[0].player_node_graph_index.unwrap();
+        let player = state
+            .graph
+            .node_downcast_mut::<MidiPlayerNode>(idx)
+            .unwrap();
+        assert_eq!(player.clip_count(), 1);
+    }
+
+    #[test]
+    fn remove_midi_clip_command() {
+        let (mut producer, _, mut state) = test_engine_midi();
+        let track_id = state.tracks[0].id;
+        let clip_id = ma_core::ids::ClipId::new();
+        let clip = std::sync::Arc::new(ma_core::midi_clip::MidiClip::new(vec![], 960));
+
+        // Install
+        producer
+            .push(EngineCommand::InstallMidiClip {
+                track_id,
+                clip_id,
+                clip,
+                start_tick: 0,
+            })
+            .unwrap();
+        dispatch(&mut state);
+
+        // Remove
+        producer
+            .push(EngineCommand::RemoveMidiClipFromPlayer { track_id, clip_id })
+            .unwrap();
+        dispatch(&mut state);
+
+        let idx = state.tracks[0].player_node_graph_index.unwrap();
+        let player = state
+            .graph
+            .node_downcast_mut::<MidiPlayerNode>(idx)
+            .unwrap();
+        assert_eq!(player.clip_count(), 0);
     }
 }

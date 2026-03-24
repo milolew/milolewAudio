@@ -22,6 +22,7 @@ pub use events::EngineEvent;
 pub use ids::{ClipId, NodeId, TrackId};
 pub use midi_clip::{MidiClip, MidiClipRef};
 pub use parameters::{
-    ControllerNumber, MidiChannel, MidiNote, MidiRangeError, TrackConfig, TransportState, Velocity,
+    ControllerNumber, MidiChannel, MidiNote, MidiRangeError, TrackConfig, TrackType,
+    TransportState, Velocity,
 };
 pub use time::{FrameCount, SamplePos, Tick, TimeError, PPQN};

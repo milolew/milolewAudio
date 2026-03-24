@@ -134,6 +134,16 @@ impl TryFrom<u8> for ControllerNumber {
     }
 }
 
+/// Whether a track plays audio files or MIDI.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrackType {
+    /// Audio track with WavPlayerNode for clip playback.
+    #[default]
+    Audio,
+    /// MIDI track with MidiPlayerNode and built-in synth.
+    Midi,
+}
+
 /// Configuration for creating a new track.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackConfig {
@@ -151,6 +161,9 @@ pub struct TrackConfig {
 
     /// Initial pan (-1.0 left, 0.0 center, 1.0 right).
     pub initial_pan: f32,
+
+    /// Track type: audio or MIDI.
+    pub track_type: TrackType,
 }
 
 impl Default for TrackConfig {
@@ -161,6 +174,7 @@ impl Default for TrackConfig {
             input_enabled: false,
             initial_volume: 1.0,
             initial_pan: 0.0,
+            track_type: TrackType::Audio,
         }
     }
 }
