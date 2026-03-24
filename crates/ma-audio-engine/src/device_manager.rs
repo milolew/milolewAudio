@@ -35,6 +35,9 @@ pub enum DeviceError {
 
     #[error("Failed to start stream: {0}")]
     PlayError(String),
+
+    #[error("Audio graph topology error: {0}")]
+    TopologyError(#[from] crate::graph::topology::TopologyError),
 }
 
 /// Manages cpal device and stream lifecycle.
@@ -135,7 +138,7 @@ impl AudioDeviceManager {
         };
 
         // 4. Build the engine
-        let (mut callback_state, engine_handle) = build_engine(engine_config);
+        let (mut callback_state, engine_handle) = build_engine(engine_config)?;
 
         // 5. Set up input capture if enabled
         let mut input_device_name = None;

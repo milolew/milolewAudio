@@ -12,6 +12,21 @@ use ma_core::ids::NodeId;
 use super::edge::Edge;
 use super::node::{AudioNode, ProcessContext};
 
+/// Errors that can occur during audio graph construction.
+#[derive(Debug, thiserror::Error)]
+pub enum TopologyError {
+    /// The audio graph contains a cycle — topological sort cannot complete.
+    #[error(
+        "audio graph cycle detected: {total} nodes total, {sorted} in topological order, \
+         {skipped} nodes in cycle(s) would be skipped"
+    )]
+    CycleDetected {
+        total: usize,
+        sorted: usize,
+        skipped: usize,
+    },
+}
+
 /// Index into the `AudioGraph::nodes` vector.
 type NodeIndex = usize;
 
@@ -51,7 +66,11 @@ impl AudioGraph {
     /// * `nodes` - All audio nodes in the graph
     /// * `edges` - All connections between nodes
     /// * `buffer_size` - Maximum frames per callback (for buffer pre-allocation)
-    pub fn new(nodes: Vec<Box<dyn AudioNode>>, edges: Vec<Edge>, buffer_size: u32) -> Self {
+    pub fn new(
+        nodes: Vec<Box<dyn AudioNode>>,
+        edges: Vec<Edge>,
+        buffer_size: u32,
+    ) -> Result<Self, TopologyError> {
         let node_count = nodes.len();
 
         // Build node_id -> index mapping
@@ -62,7 +81,7 @@ impl AudioGraph {
             .collect();
 
         // Topological sort using Kahn's algorithm
-        let schedule = topological_sort(&nodes, &edges, &node_indices);
+        let schedule = topological_sort(&nodes, &edges, &node_indices)?;
 
         // Allocate one buffer per edge
         let buffers: Vec<AudioBuffer> = edges
@@ -116,14 +135,14 @@ impl AudioGraph {
             }
         }
 
-        Self {
+        Ok(Self {
             nodes,
             edges,
             schedule,
             buffers,
             node_input_buffers,
             node_output_buffers,
-        }
+        })
     }
 
     /// Process the entire audio graph for one callback.
@@ -271,11 +290,12 @@ impl AudioGraph {
 /// Topological sort using Kahn's algorithm.
 ///
 /// Returns node indices in processing order: sources first, sinks last.
+/// Returns `Err(TopologyError::CycleDetected)` if the graph contains a cycle.
 fn topological_sort(
     nodes: &[Box<dyn AudioNode>],
     edges: &[Edge],
     node_indices: &[(NodeId, NodeIndex)],
-) -> Vec<NodeIndex> {
+) -> Result<Vec<NodeIndex>, TopologyError> {
     let n = nodes.len();
     let mut in_degree = vec![0usize; n];
     let mut adjacency: Vec<Vec<NodeIndex>> = vec![Vec::new(); n];
@@ -308,20 +328,15 @@ fn topological_sort(
         }
     }
 
-    // If result.len() != n, there's a cycle (should never happen in a valid DAG).
-    // In release builds, log the error and return what we have — nodes in the
-    // cycle simply won't process (output silence).
     if result.len() != n {
-        log::error!(
-            "Audio graph cycle detected: {} nodes total, but only {} in topological order. \
-             {} nodes will be skipped (silent).",
-            n,
-            result.len(),
-            n - result.len()
-        );
+        return Err(TopologyError::CycleDetected {
+            total: n,
+            sorted: result.len(),
+            skipped: n - result.len(),
+        });
     }
 
-    result
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -360,7 +375,7 @@ mod tests {
             },
         ];
 
-        let graph = AudioGraph::new(nodes, edges, 256);
+        let graph = AudioGraph::new(nodes, edges, 256).unwrap();
 
         // Verify topological order: input before mixer before output
         let schedule = graph.schedule();
@@ -410,7 +425,7 @@ mod tests {
             },
         ];
 
-        let mut graph = AudioGraph::new(nodes, edges, 256);
+        let mut graph = AudioGraph::new(nodes, edges, 256).unwrap();
 
         let context = ProcessContext {
             sample_rate: 48000.0,
