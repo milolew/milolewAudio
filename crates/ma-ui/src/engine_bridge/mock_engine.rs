@@ -209,6 +209,27 @@ fn run_mock_engine(
             });
         }
 
+        // Send master meter (sum of audible tracks, clamped)
+        {
+            let mut master_l: f32 = 0.0;
+            let mut master_r: f32 = 0.0;
+            for (i, ts) in state.track_states.iter().enumerate() {
+                let phase = t * 2.0 + i as f64 * 0.5;
+                let muted = ts.mute || (any_solo && !ts.solo);
+                if state.is_playing && !muted {
+                    let level = ((0.3 + 0.2 * phase.sin() as f32) * ts.volume).clamp(0.0, 1.0);
+                    master_l = (master_l + level).min(1.0);
+                    master_r = (master_r + level * 0.9).min(1.0);
+                }
+            }
+            let _ = endpoint
+                .response_tx
+                .push(EngineResponse::MasterMeterUpdate {
+                    peak_l: master_l,
+                    peak_r: master_r,
+                });
+        }
+
         // Send CPU load
         let _ = endpoint
             .response_tx

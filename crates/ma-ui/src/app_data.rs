@@ -466,6 +466,10 @@ impl AppData {
                 } => {
                     self.mixer.update_meter(*track_id, *peak_l, *peak_r);
                 }
+                EngineResponse::MasterMeterUpdate { peak_l, peak_r } => {
+                    self.mixer.master_peak_l = *peak_l;
+                    self.mixer.master_peak_r = *peak_r;
+                }
                 EngineResponse::CpuLoad(load) => {
                     self.mixer.cpu_load = *load;
                 }

@@ -76,8 +76,11 @@ impl RealEngineBridge {
                         peak_r: right,
                     });
                 }
-                EngineEvent::MasterPeakMeter { .. } => {
-                    // TODO(#XX): add master meter to UI responses — needed for master bus display
+                EngineEvent::MasterPeakMeter { left, right } => {
+                    out.push(EngineResponse::MasterMeterUpdate {
+                        peak_l: left,
+                        peak_r: right,
+                    });
                 }
                 EngineEvent::TransportStateChanged(state) => {
                     self.last_playing = state == TransportState::Playing;
