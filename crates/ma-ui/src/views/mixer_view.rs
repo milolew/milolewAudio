@@ -7,6 +7,7 @@ use vizia::prelude::*;
 
 use crate::app_data::AppData;
 use crate::widgets::channel_strip::ChannelStrip;
+use crate::widgets::master_strip::MasterStrip;
 
 /// Mixer view composing channel strips for all project tracks.
 pub struct MixerView;
@@ -31,6 +32,11 @@ impl MixerView {
                         }
                     },
                 );
+
+                // Master bus strip
+                MasterStrip::new(cx)
+                    .class("master-strip-widget")
+                    .width(Pixels(60.0));
 
                 // CPU load indicator — Binding avoids format! on every mixer poll
                 VStack::new(cx, |cx| {

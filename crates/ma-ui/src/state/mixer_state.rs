@@ -17,6 +17,10 @@ pub struct MixerState {
     pub meters: HashMap<TrackId, MeterPeaks>,
     /// CPU load from audio engine (0.0 - 1.0).
     pub cpu_load: f32,
+    /// Master bus peak levels (left), updated from engine MasterPeakMeter events.
+    pub master_peak_l: f32,
+    /// Master bus peak levels (right), updated from engine MasterPeakMeter events.
+    pub master_peak_r: f32,
 }
 
 impl MixerState {
