@@ -1,6 +1,7 @@
 //! Main view compositions for the DAW.
 
 pub mod arrangement;
+pub mod browser_view;
 pub mod device_rack;
 pub mod mixer_view;
 pub mod piano_roll_view;

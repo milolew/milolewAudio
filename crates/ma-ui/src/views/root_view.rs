@@ -4,6 +4,7 @@ use vizia::prelude::*;
 
 use crate::app_data::{ActiveView, AppData, AppEvent};
 use crate::views::arrangement::ArrangementView;
+use crate::views::browser_view::BrowserView;
 use crate::views::mixer_view::MixerView;
 use crate::views::piano_roll_view::PianoRollView;
 use crate::widgets::transport_bar::TransportBar;
@@ -45,6 +46,14 @@ impl RootView {
                         AppData::active_view.map(|v| *v == ActiveView::PianoRoll),
                     );
 
+                Button::new(cx, |cx| Label::new(cx, "Browser"))
+                    .on_press(|cx| cx.emit(AppEvent::ToggleBrowser))
+                    .class("view-tab")
+                    .toggle_class(
+                        "active",
+                        AppData::active_view.map(|v| *v == ActiveView::Browser),
+                    );
+
                 // Show active clip name in piano roll mode
                 Label::new(
                     cx,
@@ -70,6 +79,9 @@ impl RootView {
                 }
                 ActiveView::PianoRoll => {
                     PianoRollView::new(cx);
+                }
+                ActiveView::Browser => {
+                    BrowserView::new(cx);
                 }
             });
         })

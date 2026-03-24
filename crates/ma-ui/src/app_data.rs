@@ -19,6 +19,7 @@ use crate::engine_bridge::mock_engine::{spawn_mock_engine, MockEngineHandle};
 use crate::engine_bridge::real_bridge::RealEngineBridge;
 use crate::engine_bridge::responses::EngineResponse;
 use crate::state::arrangement_state::ArrangementState;
+use crate::state::browser_state::{BrowserFilter, BrowserState};
 use crate::state::mixer_state::MixerState;
 use crate::state::piano_roll_state::PianoRollState;
 use crate::state::transport_state::TransportState;
@@ -32,6 +33,7 @@ pub enum ActiveView {
     Arrangement,
     Mixer,
     PianoRoll,
+    Browser,
 }
 
 /// Root application data — the single vizia Model.
@@ -44,6 +46,7 @@ pub struct AppData {
     pub tracks: Vec<TrackState>,
     pub clips: Vec<ClipState>,
     pub active_view: ActiveView,
+    pub browser: BrowserState,
     pub device_status_text: String,
     pub device_sample_rate: String,
     pub device_buffer_size: String,
@@ -141,6 +144,14 @@ pub enum AppEvent {
     ScrollPianoRollX(f64),
     ScrollPianoRollY(i8),
     ZoomPianoRoll(f64),
+
+    // -- Browser --
+    BrowserRefresh,
+    BrowserGoUp,
+    BrowserSelect(usize),
+    BrowserActivate(usize),
+    BrowserSetFilter(BrowserFilter),
+    ToggleBrowser,
 }
 
 /// Create a deterministic UUID for demo data (stable across restarts).
@@ -332,6 +343,7 @@ impl AppData {
             tracks,
             clips,
             active_view: ActiveView::Arrangement,
+            browser: BrowserState::default(),
             device_status_text,
             device_sample_rate,
             device_buffer_size,
@@ -759,6 +771,38 @@ impl Model for AppData {
             }
             AppEvent::ZoomPianoRoll(factor) => {
                 self.piano_roll.zoom_x = (self.piano_roll.zoom_x * factor).clamp(0.01, 2.0);
+            }
+
+            // Browser
+            AppEvent::BrowserRefresh => {
+                self.browser.refresh();
+            }
+            AppEvent::BrowserGoUp => {
+                self.browser.go_up();
+            }
+            AppEvent::BrowserSelect(index) => {
+                self.browser.selected_index = Some(*index);
+            }
+            AppEvent::BrowserActivate(index) => {
+                if let Some(entry) = self.browser.entries.get(*index).cloned() {
+                    if entry.is_dir {
+                        self.browser.enter_dir(entry.path);
+                    }
+                    // File activation (loading) will be handled in a future iteration
+                }
+            }
+            AppEvent::BrowserSetFilter(filter) => {
+                self.browser.filter = *filter;
+                self.browser.refresh();
+            }
+            AppEvent::ToggleBrowser => {
+                self.browser.visible = !self.browser.visible;
+                if self.browser.visible {
+                    self.active_view = ActiveView::Browser;
+                    self.browser.refresh();
+                } else {
+                    self.active_view = ActiveView::Arrangement;
+                }
             }
         });
     }
