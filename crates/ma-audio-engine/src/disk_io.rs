@@ -43,6 +43,9 @@ pub enum DiskEvent {
     RecordingError { track_id: TrackId, error: String },
 }
 
+/// Maximum consecutive write errors before sending a RecordingError event.
+const MAX_CONSECUTIVE_WRITE_ERRORS: u32 = 10;
+
 /// State for a single active recording session.
 struct ActiveRecording {
     track_id: TrackId,
@@ -51,6 +54,10 @@ struct ActiveRecording {
     _channels: u16,
     total_samples: u64,
     path: PathBuf,
+    /// Count of consecutive write errors. Reset on successful write.
+    consecutive_write_errors: u32,
+    /// Whether a RecordingError event has been sent for this session.
+    error_reported: bool,
 }
 
 /// Batch size for reading from ring buffer.
@@ -107,6 +114,8 @@ fn disk_io_loop(cmd_rx: Receiver<DiskCommand>, evt_tx: Sender<DiskEvent>) {
                                 _channels: channels,
                                 total_samples: 0,
                                 path: output_path,
+                                consecutive_write_errors: 0,
+                                error_reported: false,
                             });
                         }
                         Err(e) => {
@@ -142,14 +151,24 @@ fn disk_io_loop(cmd_rx: Receiver<DiskCommand>, evt_tx: Sender<DiskEvent>) {
         // Drain audio from all active recordings' ring buffers
         let mut any_data = false;
         for recording in &mut active_recordings {
-            let drained = drain_ring_buffer(
-                &mut recording.consumer,
-                &mut batch_buffer,
-                &mut recording.writer,
-            );
+            let drained = drain_ring_buffer(recording, &mut batch_buffer);
             recording.total_samples += drained as u64;
             if drained > 0 {
                 any_data = true;
+            }
+
+            // Report persistent write errors to UI (once per session)
+            if recording.consecutive_write_errors >= MAX_CONSECUTIVE_WRITE_ERRORS
+                && !recording.error_reported
+            {
+                recording.error_reported = true;
+                let _ = evt_tx.send(DiskEvent::RecordingError {
+                    track_id: recording.track_id,
+                    error: format!(
+                        "Persistent disk write errors ({} consecutive failures)",
+                        recording.consecutive_write_errors
+                    ),
+                });
             }
         }
 
@@ -163,15 +182,12 @@ fn disk_io_loop(cmd_rx: Receiver<DiskCommand>, evt_tx: Sender<DiskEvent>) {
 
 /// Drain samples from a ring buffer and write them to the WAV file.
 /// Returns the number of samples written.
-fn drain_ring_buffer(
-    consumer: &mut rtrb::Consumer<f32>,
-    batch_buffer: &mut [f32],
-    writer: &mut WavWriter<std::io::BufWriter<std::fs::File>>,
-) -> usize {
+/// Tracks consecutive write errors via the `recording` state.
+fn drain_ring_buffer(recording: &mut ActiveRecording, batch_buffer: &mut [f32]) -> usize {
     let mut total = 0;
 
     loop {
-        let available = consumer.slots();
+        let available = recording.consumer.slots();
         if available == 0 {
             break;
         }
@@ -180,7 +196,7 @@ fn drain_ring_buffer(
         let mut read = 0;
 
         for sample in batch_buffer.iter_mut().take(to_read) {
-            match consumer.pop() {
+            match recording.consumer.pop() {
                 Ok(s) => {
                     *sample = s;
                     read += 1;
@@ -189,11 +205,14 @@ fn drain_ring_buffer(
             }
         }
 
-        // Write to WAV
+        // Write to WAV, tracking consecutive errors
         for &sample in &batch_buffer[..read] {
-            if writer.write_sample(sample).is_err() {
-                // Disk error — we lose this sample but continue trying
-                break;
+            if recording.writer.write_sample(sample).is_err() {
+                recording.consecutive_write_errors += 1;
+                // Don't break immediately — keep draining the ring buffer
+                // to avoid backing up the audio thread
+            } else {
+                recording.consecutive_write_errors = 0;
             }
         }
 
@@ -211,7 +230,7 @@ fn drain_ring_buffer(
 fn finalize_recording(mut recording: ActiveRecording, evt_tx: &Sender<DiskEvent>) {
     // Drain any remaining samples
     let mut batch = vec![0.0f32; BATCH_SIZE];
-    let remaining = drain_ring_buffer(&mut recording.consumer, &mut batch, &mut recording.writer);
+    let remaining = drain_ring_buffer(&mut recording, &mut batch);
     recording.total_samples += remaining as u64;
 
     // Finalize WAV header (updates the data chunk size)
