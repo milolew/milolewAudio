@@ -19,5 +19,7 @@ pub use audio_buffer::{AudioBuffer, BufferError};
 pub use commands::{EngineCommand, TopologyCommand};
 pub use events::EngineEvent;
 pub use ids::{ClipId, NodeId, TrackId};
-pub use parameters::{TrackConfig, TransportState};
+pub use parameters::{
+    ControllerNumber, MidiChannel, MidiNote, MidiRangeError, TrackConfig, TransportState, Velocity,
+};
 pub use time::{FrameCount, SamplePos, Tick, TimeError, PPQN};
