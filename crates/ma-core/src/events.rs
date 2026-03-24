@@ -48,6 +48,9 @@ pub enum EngineEvent {
     /// Audio callback did not complete in time (buffer underrun).
     AudioUnderrun,
 
+    /// The audio thread panicked. Engine outputs silence until restarted.
+    AudioThreadPanic,
+
     /// An audio device error occurred.
     DeviceError(DeviceErrorKind),
 }

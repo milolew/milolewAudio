@@ -11,6 +11,8 @@
 //! 4. Send meter events
 //! 5. Copy output to cpal buffer
 
+use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use ma_core::audio_buffer::MAX_CHANNELS;
@@ -62,6 +64,10 @@ pub struct CallbackState {
 
     /// Callback counter for conditional CPU measurement (every 16th callback).
     pub callback_count: u64,
+
+    /// Set to `true` if the audio callback panicked. Once set, all subsequent
+    /// callbacks output silence. The UI should check this flag and show an error.
+    pub has_panicked: AtomicBool,
 }
 
 // SAFETY: CallbackState is moved into the cpal audio callback closure and
@@ -75,15 +81,43 @@ unsafe impl Send for CallbackState {}
 
 /// The audio output callback. Called by cpal for each output buffer.
 ///
+/// Wraps the actual processing in `catch_unwind` so that a panic on the
+/// audio thread does not abort the process. On panic, the output buffer is
+/// filled with silence and `has_panicked` is set permanently.
+///
 /// # Arguments
 /// * `state` - Mutable reference to the callback state
 /// * `output` - cpal's interleaved output buffer to fill
 /// * `num_frames` - Number of frames in this callback
-///
-/// # Real-Time Safety
-/// This function MUST NOT: allocate, lock, do I/O, panic.
 #[inline]
 pub fn audio_callback(state: &mut CallbackState, output: &mut [f32], num_frames: u32) {
+    // If a previous callback panicked, output silence permanently.
+    // ORDERING: Relaxed OK — single-value flag, only transitions false→true
+    if state.has_panicked.load(Ordering::Relaxed) {
+        output.fill(0.0);
+        return;
+    }
+
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        audio_callback_inner(state, output, num_frames)
+    }));
+
+    if result.is_err() {
+        output.fill(0.0);
+        // ORDERING: Release — UI thread reads this with Acquire
+        state.has_panicked.store(true, Ordering::Release);
+        // Best-effort notification to UI (ring buffer push won't panic)
+        let _ = state.event_producer.push(EngineEvent::AudioThreadPanic);
+    }
+}
+
+/// The actual audio callback body. Separated from `audio_callback` so that
+/// `catch_unwind` can wrap it without nesting.
+///
+/// # Real-Time Safety
+/// This function MUST NOT: allocate, lock, do I/O.
+#[inline]
+fn audio_callback_inner(state: &mut CallbackState, output: &mut [f32], num_frames: u32) {
     state.callback_count += 1;
     let measure_cpu = state.callback_count.is_multiple_of(16);
     let start = if measure_cpu {

@@ -260,6 +260,7 @@ pub fn build_engine(config: EngineConfig) -> (CallbackState, EngineHandle) {
         sample_rate: config.sample_rate as f32,
         last_callback_duration: std::time::Duration::ZERO,
         callback_count: 0,
+        has_panicked: std::sync::atomic::AtomicBool::new(false),
     };
 
     let handle = EngineHandle {
