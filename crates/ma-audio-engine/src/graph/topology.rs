@@ -92,6 +92,30 @@ impl AudioGraph {
             }
         }
 
+        // Warn at construction time if any node exceeds MAX_NODE_IO (16).
+        // The process() loop silently truncates via .min(MAX_NODE_IO).
+        const MAX_NODE_IO: usize = 16;
+        for (idx, (inputs, outputs)) in node_input_buffers
+            .iter()
+            .zip(node_output_buffers.iter())
+            .enumerate()
+        {
+            if inputs.len() > MAX_NODE_IO {
+                log::warn!(
+                    "Node {idx} has {} inputs, exceeding MAX_NODE_IO ({MAX_NODE_IO}). \
+                     Excess inputs will be ignored during processing.",
+                    inputs.len()
+                );
+            }
+            if outputs.len() > MAX_NODE_IO {
+                log::warn!(
+                    "Node {idx} has {} outputs, exceeding MAX_NODE_IO ({MAX_NODE_IO}). \
+                     Excess outputs will be ignored during processing.",
+                    outputs.len()
+                );
+            }
+        }
+
         Self {
             nodes,
             edges,
@@ -130,17 +154,27 @@ impl AudioGraph {
             let output_indices = &self.node_output_buffers[node_idx];
 
             // Gather buffer pointers into stack-allocated arrays (no heap allocation).
+            // Bounds checks use assert! (not debug_assert!) — an OOB index is a graph
+            // construction bug and panicking is safer than undefined behavior.
             let mut in_ptrs: [*const AudioBuffer; MAX_NODE_IO] = [std::ptr::null(); MAX_NODE_IO];
             let in_count = input_indices.len().min(MAX_NODE_IO);
             for (i, &idx) in input_indices.iter().take(MAX_NODE_IO).enumerate() {
-                debug_assert!(idx < buf_len, "input buffer index out of range");
+                assert!(
+                    idx < buf_len,
+                    "input buffer index {idx} out of range (buf_len={buf_len})"
+                );
+                // SAFETY: bounds checked by assert above; buf_base points into self.buffers
                 in_ptrs[i] = unsafe { buf_base.add(idx) };
             }
 
             let mut out_ptrs: [*mut AudioBuffer; MAX_NODE_IO] = [std::ptr::null_mut(); MAX_NODE_IO];
             let out_count = output_indices.len().min(MAX_NODE_IO);
             for (i, &idx) in output_indices.iter().take(MAX_NODE_IO).enumerate() {
-                debug_assert!(idx < buf_len, "output buffer index out of range");
+                assert!(
+                    idx < buf_len,
+                    "output buffer index {idx} out of range (buf_len={buf_len})"
+                );
+                // SAFETY: bounds checked by assert above; buf_base points into self.buffers
                 out_ptrs[i] = unsafe { buf_base.add(idx) };
             }
 
