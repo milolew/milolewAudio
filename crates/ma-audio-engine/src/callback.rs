@@ -12,7 +12,7 @@
 //! 5. Copy output to cpal buffer
 
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 
 use ma_core::audio_buffer::MAX_CHANNELS;
@@ -25,6 +25,16 @@ use crate::graph::topology::AudioGraph;
 use crate::input_capture::InputCaptureReader;
 use crate::track::Track;
 use crate::transport::Transport;
+
+/// Count of events dropped due to event ring buffer overflow.
+/// Incremented on the audio thread, read/reset from UI thread.
+static DROPPED_EVENTS: AtomicU32 = AtomicU32::new(0);
+
+/// Take the current dropped event count, resetting it to zero.
+/// Call this periodically from the UI thread.
+pub fn take_dropped_event_count() -> u32 {
+    DROPPED_EVENTS.swap(0, Ordering::Relaxed)
+}
 
 /// State held by the audio callback closure.
 ///
@@ -107,7 +117,7 @@ pub fn audio_callback(state: &mut CallbackState, output: &mut [f32], num_frames:
         // ORDERING: Release — UI thread reads this with Acquire
         state.has_panicked.store(true, Ordering::Release);
         // Best-effort notification to UI (ring buffer push won't panic)
-        let _ = state.event_producer.push(EngineEvent::AudioThreadPanic);
+        push_event(&mut state.event_producer, EngineEvent::AudioThreadPanic);
     }
 }
 
@@ -190,9 +200,10 @@ fn audio_callback_inner(state: &mut CallbackState, output: &mut [f32], num_frame
                     // ORDERING: Relaxed OK — single-value flag, set/reset within audio thread
                     .swap(false, std::sync::atomic::Ordering::Relaxed)
                 {
-                    let _ = state
-                        .event_producer
-                        .push(EngineEvent::RecordingOverflow { track_id: track.id });
+                    push_event(
+                        &mut state.event_producer,
+                        EngineEvent::RecordingOverflow { track_id: track.id },
+                    );
                 }
             }
         }
@@ -222,7 +233,15 @@ fn audio_callback_inner(state: &mut CallbackState, output: &mut [f32], num_frame
         let budget =
             std::time::Duration::from_secs_f64(num_frames as f64 / state.sample_rate as f64);
         let cpu_load = elapsed.as_secs_f32() / budget.as_secs_f32();
-        let _ = state.event_producer.push(EngineEvent::CpuLoad(cpu_load));
+        push_event(&mut state.event_producer, EngineEvent::CpuLoad(cpu_load));
+    }
+}
+
+/// Push an event to the UI, counting drops on overflow.
+#[inline]
+pub(crate) fn push_event(producer: &mut rtrb::Producer<EngineEvent>, event: EngineEvent) {
+    if producer.push(event).is_err() {
+        DROPPED_EVENTS.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -239,10 +258,13 @@ fn send_meter_events(state: &mut CallbackState, _context: &ProcessContext) {
             .node_downcast_mut::<crate::graph::nodes::output_node::OutputNode>(output_idx)
         {
             let peaks = output_node.output_buffer().peak_levels();
-            let _ = state.event_producer.push(EngineEvent::MasterPeakMeter {
-                left: peaks[0],
-                right: if MAX_CHANNELS > 1 { peaks[1] } else { peaks[0] },
-            });
+            push_event(
+                &mut state.event_producer,
+                EngineEvent::MasterPeakMeter {
+                    left: peaks[0],
+                    right: if MAX_CHANNELS > 1 { peaks[1] } else { peaks[0] },
+                },
+            );
         }
     }
 }

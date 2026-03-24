@@ -8,6 +8,8 @@ use std::sync::atomic::Ordering;
 
 use ma_core::commands::EngineCommand;
 use ma_core::events::EngineEvent;
+
+use crate::callback::push_event;
 use ma_core::ids::TrackId;
 use ma_core::parameters::TransportState;
 
@@ -53,18 +55,24 @@ pub fn process_commands(
             // ── Transport ──
             EngineCommand::Play => {
                 transport.play();
-                let _ = event_producer
-                    .push(EngineEvent::TransportStateChanged(TransportState::Playing));
+                push_event(
+                    event_producer,
+                    EngineEvent::TransportStateChanged(TransportState::Playing),
+                );
             }
             EngineCommand::Stop => {
                 transport.stop();
-                let _ = event_producer
-                    .push(EngineEvent::TransportStateChanged(TransportState::Stopped));
+                push_event(
+                    event_producer,
+                    EngineEvent::TransportStateChanged(TransportState::Stopped),
+                );
             }
             EngineCommand::Pause => {
                 transport.pause();
-                let _ =
-                    event_producer.push(EngineEvent::TransportStateChanged(TransportState::Paused));
+                push_event(
+                    event_producer,
+                    EngineEvent::TransportStateChanged(TransportState::Paused),
+                );
             }
             EngineCommand::SetPosition(pos) => {
                 transport.set_position(pos);
@@ -123,9 +131,10 @@ pub fn process_commands(
                         }
                     }
                 }
-                let _ = event_producer.push(EngineEvent::TransportStateChanged(
-                    TransportState::Recording,
-                ));
+                push_event(
+                    event_producer,
+                    EngineEvent::TransportStateChanged(TransportState::Recording),
+                );
             }
             EngineCommand::StopRecording => {
                 transport.stop_recording();
@@ -135,7 +144,10 @@ pub fn process_commands(
                         set_track_node_recording(graph, idx, false);
                     }
                 }
-                let _ = event_producer.push(EngineEvent::TransportStateChanged(transport.state()));
+                push_event(
+                    event_producer,
+                    EngineEvent::TransportStateChanged(transport.state()),
+                );
             }
 
             // ── Lifecycle ──
