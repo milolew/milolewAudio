@@ -115,3 +115,193 @@ const _TOPOLOGY_SEND: fn() = || {
     fn assert_send<T: Send>() {}
     assert_send::<TopologyCommand>();
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ids::{ClipId, TrackId};
+
+    // Compile-time Send assertions (duplicate the const checks as test-visible assertions).
+    fn assert_send<T: Send>() {}
+    fn assert_sync<T: Sync>() {}
+
+    #[test]
+    fn engine_command_is_send() {
+        assert_send::<EngineCommand>();
+    }
+
+    #[test]
+    fn topology_command_is_send() {
+        assert_send::<TopologyCommand>();
+    }
+
+    #[test]
+    fn engine_command_is_sync() {
+        // EngineCommand contains no interior mutability, so it should be Sync.
+        assert_sync::<EngineCommand>();
+    }
+
+    #[test]
+    fn topology_command_is_send_and_sync() {
+        assert_send::<TopologyCommand>();
+        assert_sync::<TopologyCommand>();
+    }
+
+    // Cover all EngineCommand variants — creation and pattern matching.
+    #[test]
+    fn engine_command_transport_variants() {
+        let cmds: Vec<EngineCommand> = vec![
+            EngineCommand::Play,
+            EngineCommand::Stop,
+            EngineCommand::Pause,
+            EngineCommand::SetPosition(48000),
+            EngineCommand::SetTempo(140.0),
+            EngineCommand::SetLoop {
+                start: 0,
+                end: 96000,
+                enabled: true,
+            },
+        ];
+        assert_eq!(cmds.len(), 6);
+
+        // Pattern matching coverage.
+        for cmd in &cmds {
+            match cmd {
+                EngineCommand::Play => {}
+                EngineCommand::Stop => {}
+                EngineCommand::Pause => {}
+                EngineCommand::SetPosition(pos) => assert_eq!(*pos, 48000),
+                EngineCommand::SetTempo(bpm) => assert!((bpm - 140.0).abs() < f64::EPSILON),
+                EngineCommand::SetLoop {
+                    start,
+                    end,
+                    enabled,
+                } => {
+                    assert_eq!(*start, 0);
+                    assert_eq!(*end, 96000);
+                    assert!(*enabled);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn engine_command_track_control_variants() {
+        let track_id = TrackId::new();
+        let cmds = vec![
+            EngineCommand::SetTrackVolume {
+                track_id,
+                volume: 0.75,
+            },
+            EngineCommand::SetTrackPan {
+                track_id,
+                pan: -0.5,
+            },
+            EngineCommand::SetTrackMute {
+                track_id,
+                mute: true,
+            },
+            EngineCommand::SetTrackSolo {
+                track_id,
+                solo: false,
+            },
+        ];
+        assert_eq!(cmds.len(), 4);
+
+        match &cmds[0] {
+            EngineCommand::SetTrackVolume { volume, .. } => {
+                assert!((volume - 0.75).abs() < f32::EPSILON);
+            }
+            _ => panic!("expected SetTrackVolume"),
+        }
+    }
+
+    #[test]
+    fn engine_command_recording_variants() {
+        let track_id = TrackId::new();
+        let cmds = vec![
+            EngineCommand::ArmTrack {
+                track_id,
+                armed: true,
+            },
+            EngineCommand::StartRecording,
+            EngineCommand::StopRecording,
+        ];
+        assert_eq!(cmds.len(), 3);
+    }
+
+    #[test]
+    fn engine_command_lifecycle_variants() {
+        let cmd = EngineCommand::Shutdown;
+        matches!(cmd, EngineCommand::Shutdown);
+    }
+
+    #[test]
+    fn engine_command_debug_format() {
+        let cmd = EngineCommand::Play;
+        let debug = format!("{:?}", cmd);
+        assert!(debug.contains("Play"));
+    }
+
+    #[test]
+    fn topology_command_all_variants() {
+        let track_id = TrackId::new();
+        let clip_id = ClipId::new();
+        let data: Arc<[f32]> = Arc::from(vec![0.0f32; 1024].into_boxed_slice());
+
+        let cmds: Vec<TopologyCommand> = vec![
+            TopologyCommand::AddTrack {
+                track_id,
+                config: TrackConfig::default(),
+            },
+            TopologyCommand::RemoveTrack { track_id },
+            TopologyCommand::LoadClip {
+                track_id,
+                clip_id,
+                data,
+                channels: 2,
+                start_sample: 0,
+                length_samples: 512,
+            },
+            TopologyCommand::RemoveClip { track_id, clip_id },
+        ];
+        assert_eq!(cmds.len(), 4);
+
+        // Pattern matching coverage.
+        for cmd in &cmds {
+            match cmd {
+                TopologyCommand::AddTrack { config, .. } => {
+                    assert_eq!(config.channel_count, 2);
+                }
+                TopologyCommand::RemoveTrack { track_id: id } => {
+                    assert_eq!(*id, track_id);
+                }
+                TopologyCommand::LoadClip {
+                    channels,
+                    length_samples,
+                    ..
+                } => {
+                    assert_eq!(*channels, 2);
+                    assert_eq!(*length_samples, 512);
+                }
+                TopologyCommand::RemoveClip {
+                    track_id: tid,
+                    clip_id: cid,
+                } => {
+                    assert_eq!(*tid, track_id);
+                    assert_eq!(*cid, clip_id);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn topology_command_debug_format() {
+        let cmd = TopologyCommand::RemoveTrack {
+            track_id: TrackId::new(),
+        };
+        let debug = format!("{:?}", cmd);
+        assert!(debug.contains("RemoveTrack"));
+    }
+}

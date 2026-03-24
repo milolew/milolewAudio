@@ -78,3 +78,209 @@ pub enum StreamErrorCode {
     DeviceLost,
     Unknown,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ids::TrackId;
+    use crate::parameters::TransportState;
+
+    fn assert_send<T: Send>() {}
+    fn assert_sync<T: Sync>() {}
+
+    #[test]
+    fn engine_event_is_send() {
+        assert_send::<EngineEvent>();
+    }
+
+    #[test]
+    fn engine_event_is_sync() {
+        assert_sync::<EngineEvent>();
+    }
+
+    #[test]
+    fn device_error_kind_is_send_and_sync() {
+        assert_send::<DeviceErrorKind>();
+        assert_sync::<DeviceErrorKind>();
+    }
+
+    #[test]
+    fn stream_error_code_is_send_and_sync() {
+        assert_send::<StreamErrorCode>();
+        assert_sync::<StreamErrorCode>();
+    }
+
+    #[test]
+    fn engine_event_metering_variants() {
+        let track_id = TrackId::new();
+        let events: Vec<EngineEvent> = vec![
+            EngineEvent::PeakMeter {
+                track_id,
+                left: 0.5,
+                right: 0.8,
+            },
+            EngineEvent::MasterPeakMeter {
+                left: 0.9,
+                right: 0.7,
+            },
+            EngineEvent::CpuLoad(0.45),
+        ];
+        assert_eq!(events.len(), 3);
+
+        match &events[0] {
+            EngineEvent::PeakMeter { left, right, .. } => {
+                assert!((left - 0.5).abs() < f32::EPSILON);
+                assert!((right - 0.8).abs() < f32::EPSILON);
+            }
+            _ => panic!("expected PeakMeter"),
+        }
+
+        match &events[1] {
+            EngineEvent::MasterPeakMeter { left, right } => {
+                assert!((left - 0.9).abs() < f32::EPSILON);
+                assert!((right - 0.7).abs() < f32::EPSILON);
+            }
+            _ => panic!("expected MasterPeakMeter"),
+        }
+
+        match &events[2] {
+            EngineEvent::CpuLoad(load) => {
+                assert!((load - 0.45).abs() < f32::EPSILON);
+            }
+            _ => panic!("expected CpuLoad"),
+        }
+    }
+
+    #[test]
+    fn engine_event_transport_variants() {
+        let events: Vec<EngineEvent> = vec![
+            EngineEvent::PlayheadPosition(48000),
+            EngineEvent::TransportStateChanged(TransportState::Playing),
+            EngineEvent::TransportStateChanged(TransportState::Stopped),
+            EngineEvent::TransportStateChanged(TransportState::Paused),
+            EngineEvent::TransportStateChanged(TransportState::Recording),
+        ];
+        assert_eq!(events.len(), 5);
+
+        match &events[0] {
+            EngineEvent::PlayheadPosition(pos) => assert_eq!(*pos, 48000),
+            _ => panic!("expected PlayheadPosition"),
+        }
+
+        match &events[1] {
+            EngineEvent::TransportStateChanged(state) => {
+                assert_eq!(*state, TransportState::Playing);
+            }
+            _ => panic!("expected TransportStateChanged"),
+        }
+    }
+
+    #[test]
+    fn engine_event_recording_variants() {
+        let track_id = TrackId::new();
+        let events: Vec<EngineEvent> = vec![
+            EngineEvent::RecordingOverflow { track_id },
+            EngineEvent::RecordingComplete { track_id },
+        ];
+        assert_eq!(events.len(), 2);
+
+        match &events[0] {
+            EngineEvent::RecordingOverflow { track_id: id } => assert_eq!(*id, track_id),
+            _ => panic!("expected RecordingOverflow"),
+        }
+    }
+
+    #[test]
+    fn engine_event_error_variants() {
+        let events: Vec<EngineEvent> = vec![
+            EngineEvent::AudioUnderrun,
+            EngineEvent::DeviceError(DeviceErrorKind::DeviceDisconnected),
+            EngineEvent::DeviceError(DeviceErrorKind::StreamError(StreamErrorCode::Overflow)),
+            EngineEvent::DeviceError(DeviceErrorKind::StreamError(StreamErrorCode::Underflow)),
+            EngineEvent::DeviceError(DeviceErrorKind::StreamError(StreamErrorCode::DeviceLost)),
+            EngineEvent::DeviceError(DeviceErrorKind::StreamError(StreamErrorCode::Unknown)),
+            EngineEvent::DeviceError(DeviceErrorKind::UnsupportedSampleRate(192000)),
+            EngineEvent::DeviceError(DeviceErrorKind::UnsupportedBufferSize(8192)),
+        ];
+        assert_eq!(events.len(), 8);
+    }
+
+    #[test]
+    fn engine_event_clone() {
+        let track_id = TrackId::new();
+        let event = EngineEvent::PeakMeter {
+            track_id,
+            left: 0.5,
+            right: 0.3,
+        };
+        let cloned = event.clone();
+        match (&event, &cloned) {
+            (
+                EngineEvent::PeakMeter {
+                    left: l1,
+                    right: r1,
+                    ..
+                },
+                EngineEvent::PeakMeter {
+                    left: l2,
+                    right: r2,
+                    ..
+                },
+            ) => {
+                assert!((l1 - l2).abs() < f32::EPSILON);
+                assert!((r1 - r2).abs() < f32::EPSILON);
+            }
+            _ => panic!("clone should produce same variant"),
+        }
+    }
+
+    #[test]
+    fn engine_event_debug_format() {
+        let event = EngineEvent::AudioUnderrun;
+        let debug = format!("{:?}", event);
+        assert!(debug.contains("AudioUnderrun"));
+    }
+
+    #[test]
+    fn stream_error_code_all_variants() {
+        let codes = [
+            StreamErrorCode::Overflow,
+            StreamErrorCode::Underflow,
+            StreamErrorCode::DeviceLost,
+            StreamErrorCode::Unknown,
+        ];
+        // Verify they are all distinct.
+        for i in 0..codes.len() {
+            for j in (i + 1)..codes.len() {
+                assert_ne!(codes[i], codes[j]);
+            }
+        }
+    }
+
+    #[test]
+    fn stream_error_code_copy() {
+        let code = StreamErrorCode::Overflow;
+        let copied = code;
+        assert_eq!(code, copied);
+    }
+
+    #[test]
+    fn device_error_kind_all_variants() {
+        let errors: Vec<DeviceErrorKind> = vec![
+            DeviceErrorKind::DeviceDisconnected,
+            DeviceErrorKind::StreamError(StreamErrorCode::Unknown),
+            DeviceErrorKind::UnsupportedSampleRate(48000),
+            DeviceErrorKind::UnsupportedBufferSize(256),
+        ];
+        assert_eq!(errors.len(), 4);
+
+        match &errors[2] {
+            DeviceErrorKind::UnsupportedSampleRate(rate) => assert_eq!(*rate, 48000),
+            _ => panic!("expected UnsupportedSampleRate"),
+        }
+        match &errors[3] {
+            DeviceErrorKind::UnsupportedBufferSize(size) => assert_eq!(*size, 256),
+            _ => panic!("expected UnsupportedBufferSize"),
+        }
+    }
+}
