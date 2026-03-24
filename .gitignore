@@ -31,3 +31,6 @@ Cargo.lock
 
 # VST3 plugins
 *.vst3
+
+# Claude Code worktrees
+.claude/worktrees/
