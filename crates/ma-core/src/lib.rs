@@ -15,7 +15,7 @@ pub mod ids;
 pub mod parameters;
 pub mod time;
 
-pub use audio_buffer::AudioBuffer;
+pub use audio_buffer::{AudioBuffer, BufferError};
 pub use commands::{EngineCommand, TopologyCommand};
 pub use events::EngineEvent;
 pub use ids::{ClipId, NodeId, TrackId};

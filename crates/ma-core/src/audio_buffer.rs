@@ -7,12 +7,39 @@
 //! Conversion from/to cpal's interleaved format happens at the graph boundaries
 //! (InputNode and OutputNode).
 
+use thiserror::Error;
+
 /// Maximum number of frames per audio callback.
 /// This is the upper bound for buffer pre-allocation. Typical values: 64, 128, 256, 512, 1024.
 pub const MAX_BUFFER_SIZE: usize = 2048;
 
 /// Maximum number of audio channels per buffer.
 pub const MAX_CHANNELS: usize = 2;
+
+/// Errors that can occur when accessing audio buffer data.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum BufferError {
+    /// Channel index is out of range for this buffer.
+    #[error("channel index {requested} out of range (buffer has {available} channels)")]
+    ChannelOutOfRange {
+        requested: usize,
+        available: usize,
+    },
+
+    /// Frame count exceeds the maximum buffer size.
+    #[error("frame count {requested} exceeds maximum buffer size {max}")]
+    FramesExceedMax {
+        requested: usize,
+        max: usize,
+    },
+
+    /// Channel count exceeds the maximum channel count.
+    #[error("channel count {requested} exceeds maximum {max}")]
+    ChannelsExceedMax {
+        requested: usize,
+        max: usize,
+    },
+}
 
 /// A fixed-capacity, non-interleaved audio buffer.
 ///
@@ -35,14 +62,49 @@ pub struct AudioBuffer {
 
 impl AudioBuffer {
     /// Create a new silent (zeroed) audio buffer.
+    ///
+    /// # Panics
+    /// Panics if `channels > MAX_CHANNELS` or `frames > MAX_BUFFER_SIZE`.
     pub fn new(channels: usize, frames: u32) -> Self {
-        debug_assert!(channels <= MAX_CHANNELS);
-        debug_assert!((frames as usize) <= MAX_BUFFER_SIZE);
+        assert!(
+            channels <= MAX_CHANNELS,
+            "channel count {} exceeds maximum {}",
+            channels,
+            MAX_CHANNELS
+        );
+        assert!(
+            (frames as usize) <= MAX_BUFFER_SIZE,
+            "frame count {} exceeds maximum {}",
+            frames,
+            MAX_BUFFER_SIZE
+        );
         Self {
             data: [0.0; MAX_BUFFER_SIZE * MAX_CHANNELS],
             channels,
             frames,
         }
+    }
+
+    /// Try to create a new silent (zeroed) audio buffer, returning an error
+    /// if parameters are out of range.
+    pub fn try_new(channels: usize, frames: u32) -> Result<Self, BufferError> {
+        if channels > MAX_CHANNELS {
+            return Err(BufferError::ChannelsExceedMax {
+                requested: channels,
+                max: MAX_CHANNELS,
+            });
+        }
+        if (frames as usize) > MAX_BUFFER_SIZE {
+            return Err(BufferError::FramesExceedMax {
+                requested: frames as usize,
+                max: MAX_BUFFER_SIZE,
+            });
+        }
+        Ok(Self {
+            data: [0.0; MAX_BUFFER_SIZE * MAX_CHANNELS],
+            channels,
+            frames,
+        })
     }
 
     /// Create a stereo buffer (the most common case).
@@ -68,26 +130,113 @@ impl AudioBuffer {
     }
 
     /// Set the number of valid frames (e.g., when the callback provides fewer frames).
+    ///
+    /// # Panics
+    /// Panics if `frames > MAX_BUFFER_SIZE`.
     #[inline]
     pub fn set_frames(&mut self, frames: u32) {
-        debug_assert!((frames as usize) <= MAX_BUFFER_SIZE);
+        assert!(
+            (frames as usize) <= MAX_BUFFER_SIZE,
+            "frame count {} exceeds maximum {}",
+            frames,
+            MAX_BUFFER_SIZE
+        );
         self.frames = frames;
     }
 
+    /// Try to set the number of valid frames, returning an error if out of range.
+    #[inline]
+    pub fn try_set_frames(&mut self, frames: u32) -> Result<(), BufferError> {
+        if (frames as usize) > MAX_BUFFER_SIZE {
+            return Err(BufferError::FramesExceedMax {
+                requested: frames as usize,
+                max: MAX_BUFFER_SIZE,
+            });
+        }
+        self.frames = frames;
+        Ok(())
+    }
+
     /// Get an immutable slice of samples for a specific channel.
+    ///
+    /// # Panics
+    /// Panics if `ch >= self.channels()`.
     #[inline]
     pub fn channel(&self, ch: usize) -> &[f32] {
-        debug_assert!(ch < self.channels);
+        assert!(
+            ch < self.channels,
+            "channel index {} out of range (buffer has {} channels)",
+            ch,
+            self.channels
+        );
         let start = ch * MAX_BUFFER_SIZE;
         &self.data[start..start + self.frames as usize]
     }
 
     /// Get a mutable slice of samples for a specific channel.
+    ///
+    /// # Panics
+    /// Panics if `ch >= self.channels()`.
     #[inline]
     pub fn channel_mut(&mut self, ch: usize) -> &mut [f32] {
-        debug_assert!(ch < self.channels);
+        assert!(
+            ch < self.channels,
+            "channel index {} out of range (buffer has {} channels)",
+            ch,
+            self.channels
+        );
         let start = ch * MAX_BUFFER_SIZE;
         &mut self.data[start..start + self.frames as usize]
+    }
+
+    /// Try to get an immutable slice of samples for a specific channel.
+    /// Returns `Err(BufferError::ChannelOutOfRange)` if the channel index is invalid.
+    #[inline]
+    pub fn try_channel(&self, ch: usize) -> Result<&[f32], BufferError> {
+        if ch >= self.channels {
+            return Err(BufferError::ChannelOutOfRange {
+                requested: ch,
+                available: self.channels,
+            });
+        }
+        let start = ch * MAX_BUFFER_SIZE;
+        Ok(&self.data[start..start + self.frames as usize])
+    }
+
+    /// Try to get a mutable slice of samples for a specific channel.
+    /// Returns `Err(BufferError::ChannelOutOfRange)` if the channel index is invalid.
+    #[inline]
+    pub fn try_channel_mut(&mut self, ch: usize) -> Result<&mut [f32], BufferError> {
+        if ch >= self.channels {
+            return Err(BufferError::ChannelOutOfRange {
+                requested: ch,
+                available: self.channels,
+            });
+        }
+        let start = ch * MAX_BUFFER_SIZE;
+        Ok(&mut self.data[start..start + self.frames as usize])
+    }
+
+    /// Get a single sample value by channel and frame index.
+    /// Returns `None` if either index is out of range.
+    #[inline]
+    pub fn get(&self, ch: usize, frame: usize) -> Option<&f32> {
+        if ch >= self.channels || frame >= self.frames as usize {
+            return None;
+        }
+        let index = ch * MAX_BUFFER_SIZE + frame;
+        Some(&self.data[index])
+    }
+
+    /// Get a mutable reference to a single sample by channel and frame index.
+    /// Returns `None` if either index is out of range.
+    #[inline]
+    pub fn get_mut(&mut self, ch: usize, frame: usize) -> Option<&mut f32> {
+        if ch >= self.channels || frame >= self.frames as usize {
+            return None;
+        }
+        let index = ch * MAX_BUFFER_SIZE + frame;
+        Some(&mut self.data[index])
     }
 
     /// Fill all channels with silence (0.0).
