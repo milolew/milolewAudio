@@ -161,7 +161,13 @@ impl AudioDeviceManager {
                     create_input_capture(input_channels as usize, config.buffer_size);
                 callback_state.input_capture_reader = Some(capture_reader);
 
-                match self.build_input_stream(input_device, input_stream_config, capture_state) {
+                let error_flag = std::sync::Arc::clone(&callback_state.device_error_flag);
+                match self.build_input_stream(
+                    input_device,
+                    input_stream_config,
+                    capture_state,
+                    error_flag,
+                ) {
                     Ok(stream) => {
                         self.input_stream = Some(stream);
                         input_device_name = Some(dev_name);
@@ -276,6 +282,7 @@ impl AudioDeviceManager {
         mut callback_state: CallbackState,
     ) -> Result<cpal::Stream, DeviceError> {
         let num_channels = config.channels as usize;
+        let error_flag = std::sync::Arc::clone(&callback_state.device_error_flag);
         let stream = device
             .build_output_stream(
                 &config,
@@ -285,6 +292,10 @@ impl AudioDeviceManager {
                 },
                 move |err| {
                     log::error!("Output stream error: {err}");
+                    // Signal error to audio callback via atomic flag.
+                    // Mapping: 1=Overflow, 2=Underflow, 3=DeviceLost, 4=Unknown
+                    let code = cpal_error_to_code(&err);
+                    error_flag.store(code, std::sync::atomic::Ordering::Relaxed);
                 },
                 None,
             )
@@ -298,6 +309,7 @@ impl AudioDeviceManager {
         device: cpal::Device,
         config: cpal::StreamConfig,
         mut capture_state: InputCaptureState,
+        device_error_flag: std::sync::Arc<std::sync::atomic::AtomicU8>,
     ) -> Result<cpal::Stream, DeviceError> {
         let stream = device
             .build_input_stream(
@@ -307,12 +319,23 @@ impl AudioDeviceManager {
                 },
                 move |err| {
                     log::error!("Input stream error: {err}");
+                    let code = cpal_error_to_code(&err);
+                    device_error_flag.store(code, std::sync::atomic::Ordering::Relaxed);
                 },
                 None,
             )
             .map_err(|e| DeviceError::InputStreamError(e.to_string()))?;
 
         Ok(stream)
+    }
+}
+
+/// Map a cpal stream error to a numeric code for the atomic flag.
+/// 1=Overflow, 2=Underflow, 3=DeviceLost, 4=Unknown
+fn cpal_error_to_code(err: &cpal::StreamError) -> u8 {
+    match err {
+        cpal::StreamError::DeviceNotAvailable => 3,
+        cpal::StreamError::BackendSpecific { .. } => 4,
     }
 }
 

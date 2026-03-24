@@ -12,7 +12,7 @@
 //! 5. Copy output to cpal buffer
 
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::time::Instant;
 
 use ma_core::audio_buffer::MAX_CHANNELS;
@@ -78,6 +78,11 @@ pub struct CallbackState {
     /// Set to `true` if the audio callback panicked. Once set, all subsequent
     /// callbacks output silence. The UI should check this flag and show an error.
     pub has_panicked: AtomicBool,
+
+    /// Set by cpal stream error callbacks to signal device errors.
+    /// The audio callback checks this flag and forwards it as an EngineEvent.
+    /// 0 = no error. Non-zero value is a `StreamErrorCode` discriminant + 1.
+    pub device_error_flag: std::sync::Arc<AtomicU8>,
 }
 
 // SAFETY: CallbackState is moved into the cpal audio callback closure and
@@ -149,6 +154,23 @@ fn audio_callback_inner(state: &mut CallbackState, output: &mut [f32], num_frame
         // Fill with silence and return
         output.fill(0.0);
         return;
+    }
+
+    // 1b. Check for device errors reported by cpal error callbacks
+    let error_code = state.device_error_flag.swap(0, Ordering::Relaxed);
+    if error_code != 0 {
+        use ma_core::events::DeviceErrorKind;
+        use ma_core::events::StreamErrorCode;
+        let code = match error_code {
+            1 => StreamErrorCode::Overflow,
+            2 => StreamErrorCode::Underflow,
+            3 => StreamErrorCode::DeviceLost,
+            _ => StreamErrorCode::Unknown,
+        };
+        push_event(
+            &mut state.event_producer,
+            EngineEvent::DeviceError(DeviceErrorKind::StreamError(code)),
+        );
     }
 
     // 2. Drain input capture ring buffer into InputNode

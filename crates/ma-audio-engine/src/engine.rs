@@ -263,6 +263,7 @@ pub fn build_engine(
         last_callback_duration: std::time::Duration::ZERO,
         callback_count: 0,
         has_panicked: std::sync::atomic::AtomicBool::new(false),
+        device_error_flag: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
     };
 
     let handle = EngineHandle {
