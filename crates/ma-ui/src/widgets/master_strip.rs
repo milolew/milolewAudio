@@ -8,17 +8,11 @@ use vizia::prelude::*;
 use vizia::vg;
 
 use crate::app_data::AppData;
+use crate::widgets::meter_utils::{draw_meter_bar, METER_BG};
 
-/// Color constants matching the channel strip theme.
+/// Color constants specific to the master strip.
 const LABEL_COLOR: (u8, u8, u8) = (0xB0, 0xB0, 0xB0);
 const TITLE_COLOR: (u8, u8, u8) = (0xFF, 0xCC, 0x00);
-const BG_COLOR: (u8, u8, u8) = (0x14, 0x14, 0x14);
-const GREEN: (u8, u8, u8) = (0x4C, 0xAF, 0x50);
-const YELLOW: (u8, u8, u8) = (0xFF, 0xC1, 0x07);
-const RED: (u8, u8, u8) = (0xF4, 0x43, 0x36);
-
-const ZONE_GREEN_END: f32 = 0.7;
-const ZONE_YELLOW_END: f32 = 0.9;
 
 /// Master bus channel strip for the mixer view.
 pub struct MasterStrip;
@@ -26,64 +20,6 @@ pub struct MasterStrip;
 impl MasterStrip {
     pub fn new(cx: &mut Context) -> Handle<'_, Self> {
         Self.build(cx, |_cx| {})
-    }
-}
-
-fn draw_meter_bar(canvas: &Canvas, x: f32, bottom: f32, w: f32, h: f32, peak: f32, scale: f32) {
-    let peak = peak.clamp(0.0, 1.0);
-    let fill_h = peak * h;
-    if fill_h <= 0.0 {
-        return;
-    }
-
-    // Green zone
-    let green_frac = peak.min(ZONE_GREEN_END);
-    let green_h = green_frac * h;
-    if green_h > 0.0 {
-        let mut p = vg::Paint::default();
-        p.set_color(vg::Color::from_argb(255, GREEN.0, GREEN.1, GREEN.2));
-        p.set_style(vg::PaintStyle::Fill);
-        p.set_anti_alias(true);
-        canvas.draw_rect(vg::Rect::from_xywh(x, bottom - green_h, w, green_h), &p);
-    }
-
-    // Yellow zone
-    if peak > ZONE_GREEN_END {
-        let yellow_frac = peak.min(ZONE_YELLOW_END) - ZONE_GREEN_END;
-        let yellow_h = yellow_frac * h;
-        let top = bottom - ZONE_GREEN_END * h - yellow_h;
-        if yellow_h > 0.0 {
-            let mut p = vg::Paint::default();
-            p.set_color(vg::Color::from_argb(255, YELLOW.0, YELLOW.1, YELLOW.2));
-            p.set_style(vg::PaintStyle::Fill);
-            p.set_anti_alias(true);
-            canvas.draw_rect(vg::Rect::from_xywh(x, top, w, yellow_h), &p);
-        }
-    }
-
-    // Red zone
-    if peak > ZONE_YELLOW_END {
-        let red_frac = peak - ZONE_YELLOW_END;
-        let red_h = red_frac * h;
-        let top = bottom - fill_h;
-        if red_h > 0.0 {
-            let mut p = vg::Paint::default();
-            p.set_color(vg::Color::from_argb(255, RED.0, RED.1, RED.2));
-            p.set_style(vg::PaintStyle::Fill);
-            p.set_anti_alias(true);
-            canvas.draw_rect(vg::Rect::from_xywh(x, top, w, red_h), &p);
-        }
-    }
-
-    // Peak hold line
-    if peak > 0.01 {
-        let peak_y = bottom - fill_h;
-        let mut hp = vg::Paint::default();
-        hp.set_color(vg::Color::from_argb(255, 255, 255, 255));
-        hp.set_style(vg::PaintStyle::Stroke);
-        hp.set_stroke_width(1.0 * scale);
-        hp.set_anti_alias(true);
-        canvas.draw_line((x, peak_y), (x + w, peak_y), &hp);
     }
 }
 
@@ -118,7 +54,7 @@ impl View for MasterStrip {
         // Background
         let mut bg = vg::Paint::default();
         bg.set_color(vg::Color::from_argb(
-            255, BG_COLOR.0, BG_COLOR.1, BG_COLOR.2,
+            255, METER_BG.0, METER_BG.1, METER_BG.2,
         ));
         bg.set_style(vg::PaintStyle::Fill);
         bg.set_anti_alias(true);

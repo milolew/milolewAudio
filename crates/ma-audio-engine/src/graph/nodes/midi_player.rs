@@ -14,7 +14,7 @@
 use std::any::Any;
 use std::f64::consts::TAU;
 
-use ma_core::audio_buffer::AudioBuffer;
+use ma_core::audio_buffer::{AudioBuffer, MAX_BUFFER_SIZE};
 use ma_core::ids::{ClipId, NodeId};
 use ma_core::midi_clip::MidiClipRef;
 use ma_core::parameters::{MidiMessage, TransportState};
@@ -143,8 +143,13 @@ impl MidiPlayerNode {
                     MidiMessage::NoteOn { note, velocity, .. } => {
                         let idx = note as usize;
                         if idx < 128 {
-                            self.active_notes[idx].active = true;
-                            self.active_notes[idx].amplitude = f32::from(velocity) / 127.0;
+                            // MIDI spec: NoteOn with velocity 0 is equivalent to NoteOff
+                            if velocity == 0 {
+                                self.active_notes[idx].active = false;
+                            } else {
+                                self.active_notes[idx].active = true;
+                                self.active_notes[idx].amplitude = f32::from(velocity) / 127.0;
+                            }
                         }
                     }
                     MidiMessage::NoteOff { note, .. } => {
@@ -158,9 +163,12 @@ impl MidiPlayerNode {
             }
         }
 
-        // Synthesize audio from active notes
+        // Synthesize audio from active notes into a stack buffer,
+        // then copy to both channels. Avoids per-sample bounds checks
+        // from get_mut() and the double-borrow issue with channel_mut().
         let frames = buffer_size as usize;
         let inv_sr = 1.0 / sample_rate;
+        let mut temp = [0.0f32; MAX_BUFFER_SIZE];
 
         for note_num in 0..128u8 {
             let state = &mut self.active_notes[note_num as usize];
@@ -172,20 +180,26 @@ impl MidiPlayerNode {
             let phase_inc = freq * inv_sr;
             let amp = state.amplitude;
 
-            for frame in 0..frames {
-                let sample = (state.phase * TAU).sin() as f32 * amp * 0.25;
-                // Write to each channel with separate borrows to satisfy the borrow checker.
-                // get_mut returns Option — the borrow is released between calls.
-                if let Some(s) = output.get_mut(0, frame) {
-                    *s += sample;
-                }
-                if let Some(s) = output.get_mut(1, frame) {
-                    *s += sample;
-                }
+            for sample in temp.iter_mut().take(frames) {
+                *sample += (state.phase * TAU).sin() as f32 * amp * 0.25;
                 state.phase += phase_inc;
                 if state.phase >= 1.0 {
                     state.phase -= 1.0;
                 }
+            }
+        }
+
+        // Copy synthesized audio to both stereo channels
+        {
+            let ch = output.channel_mut(0);
+            for (dst, src) in ch.iter_mut().zip(temp.iter()) {
+                *dst += src;
+            }
+        }
+        {
+            let ch = output.channel_mut(1);
+            for (dst, src) in ch.iter_mut().zip(temp.iter()) {
+                *dst += src;
             }
         }
     }
@@ -473,5 +487,22 @@ mod tests {
         let node = MidiPlayerNode::new(NodeId(1), 4);
         let any_ref = node.as_any();
         assert!(any_ref.downcast_ref::<MidiPlayerNode>().is_some());
+    }
+
+    #[test]
+    fn note_on_velocity_zero_treated_as_note_off() {
+        let mut node = MidiPlayerNode::new(NodeId(1), 4);
+
+        // NoteOn with velocity 0 should deactivate the note (MIDI spec)
+        let clip = make_clip_ref(vec![note_on(0, 60, 100), note_on(1, 60, 0)], PPQN * 4, 0);
+        node.add_clip(clip);
+
+        let mut buf = ma_core::AudioBuffer::stereo(256);
+        let context = make_context(TransportState::Playing, 0, 120.0);
+
+        let mut outputs: Vec<&mut ma_core::AudioBuffer> = vec![&mut buf];
+        node.process(&[], &mut outputs, &context);
+
+        assert!(!node.active_notes[60].active);
     }
 }

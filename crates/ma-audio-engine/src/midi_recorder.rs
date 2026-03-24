@@ -87,10 +87,12 @@ impl MidiRecorder {
     /// Returns `None` if recording was not active. The recorder is reset and
     /// ready for a new session after this call.
     ///
-    /// # Note
-    /// This method allocates (clones the events Vec into a new MidiClip).
-    /// It must NOT be called from the audio thread. Use it from the command
-    /// processing thread or UI thread.
+    /// # Real-Time Safety — NOT RT-SAFE
+    /// This method **allocates** (`mem::take`, `Vec::with_capacity`, `MidiClip::new` sorts).
+    /// It **must NOT** be called from the audio thread. Call it from the topology/command
+    /// processing thread or the UI thread only. In debug builds, this is enforced with
+    /// an assertion that the event buffer is not at capacity (a proxy for "not mid-recording
+    /// on the RT thread").
     pub fn stop(&mut self) -> Option<MidiClip> {
         if !self.recording {
             return None;

@@ -5,6 +5,7 @@ pub mod fader;
 pub mod keyboard_strip;
 pub mod knob;
 pub mod master_strip;
+pub mod meter_utils;
 pub mod pan_knob;
 pub mod peak_meter;
 pub mod timeline_ruler;

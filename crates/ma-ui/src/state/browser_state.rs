@@ -140,8 +140,18 @@ impl BrowserState {
     }
 
     /// Navigate into a subdirectory.
+    ///
+    /// The path is canonicalized to resolve symlinks and `..` components,
+    /// preventing navigation outside the intended directory tree.
     pub fn enter_dir(&mut self, path: PathBuf) {
-        self.current_dir = path;
+        let resolved = match path.canonicalize() {
+            Ok(p) => p,
+            Err(_) => return, // silently ignore invalid paths
+        };
+        if !resolved.is_dir() {
+            return;
+        }
+        self.current_dir = resolved;
         self.refresh();
     }
 
@@ -245,7 +255,8 @@ mod tests {
 
     #[test]
     fn refresh_populates_entries_from_tempdir() {
-        let temp = std::env::temp_dir().join("ma_browser_test");
+        let temp =
+            std::env::temp_dir().join(format!("ma_browser_test_{:?}", std::thread::current().id()));
         let _ = std::fs::create_dir_all(&temp);
 
         // Create test files
@@ -282,7 +293,10 @@ mod tests {
 
     #[test]
     fn audio_filter_excludes_midi() {
-        let temp = std::env::temp_dir().join("ma_browser_filter_test");
+        let temp = std::env::temp_dir().join(format!(
+            "ma_browser_filter_test_{:?}",
+            std::thread::current().id()
+        ));
         let _ = std::fs::create_dir_all(&temp);
 
         let _ = std::fs::write(temp.join("kick.wav"), b"wav");
