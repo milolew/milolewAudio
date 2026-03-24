@@ -15,6 +15,7 @@
 
 mod clip_renderer;
 mod grid;
+mod live_waveform;
 mod playhead;
 
 use vizia::prelude::*;
@@ -27,6 +28,7 @@ use crate::widgets::timeline_ruler::TimelineRuler;
 
 use self::clip_renderer::{draw_clip, ClipDrawParams};
 use self::grid::{draw_grid, GridParams};
+use self::live_waveform::{draw_recording_waveform, WaveformDrawParams};
 use self::playhead::{draw_loop_region, draw_playhead};
 
 /// Width of the track header panel in pixels.
@@ -239,14 +241,23 @@ impl View for TrackHeader {
 // TrackLane — custom-drawn clip area with grid, clips, and playhead
 // ---------------------------------------------------------------------------
 
-/// Track lane — draws clips, grid lines, and playhead for a single track.
+/// Track lane — draws clips, grid lines, playhead, and live waveform for a single track.
 struct TrackLane {
     track_index: usize,
+    /// Accumulated (tick, peak) samples during recording.
+    recording_peaks: Vec<(i64, f32)>,
+    /// Whether recording was active on the previous poll.
+    was_recording: bool,
 }
 
 impl TrackLane {
     fn new(cx: &mut Context, track_index: usize) -> Handle<'_, Self> {
-        Self { track_index }.build(cx, |_cx| {})
+        Self {
+            track_index,
+            recording_peaks: Vec::new(),
+            was_recording: false,
+        }
+        .build(cx, |_cx| {})
     }
 
     /// Hit-test: find which clip (if any) is under the given pixel coordinate.
@@ -354,6 +365,21 @@ impl View for TrackLane {
             draw_clip(canvas, clip, &clip_params, is_clip_selected);
         }
 
+        // -- Live recording waveform --
+        if !self.recording_peaks.is_empty() {
+            draw_recording_waveform(
+                canvas,
+                &self.recording_peaks,
+                &WaveformDrawParams {
+                    bounds,
+                    scale,
+                    zoom_x,
+                    scroll_x,
+                    track_color: track.color,
+                },
+            );
+        }
+
         // -- Playhead --
         let playhead_x = bounds.x + ((transport.position as f64 - scroll_x) * zoom_x) as f32;
         draw_playhead(canvas, bounds, scale, playhead_x);
@@ -372,6 +398,26 @@ impl View for TrackLane {
     }
 
     fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
+        // Accumulate peak meter data during recording for live waveform
+        event.map(|app_event, _meta| {
+            if let AppEvent::PollEngine = app_event {
+                if let Some(app) = cx.data::<AppData>() {
+                    let is_recording = app.transport.is_recording;
+                    if is_recording {
+                        if let Some(track) = app.tracks.get(self.track_index) {
+                            let meter = app.mixer.get_meter(track.id);
+                            let peak = meter.peak_l.max(meter.peak_r);
+                            self.recording_peaks.push((app.transport.position, peak));
+                        }
+                    } else if self.was_recording {
+                        self.recording_peaks.clear();
+                    }
+                    self.was_recording = is_recording;
+                }
+                cx.needs_redraw(); // REDRAW: animated — playhead + recording waveform
+            }
+        });
+
         event.map(|window_event, meta| match window_event {
             WindowEvent::MouseScroll(dx, dy) => {
                 let modifiers = cx.modifiers();
