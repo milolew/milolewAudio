@@ -113,6 +113,11 @@ impl AudioBuffer {
                 self.data[start + frames..start + self.frames as usize].fill(0.0);
             }
         }
+        // Zero channels present in self but not in other (prevents stale audio)
+        for ch in channels..self.channels {
+            let start = ch * MAX_BUFFER_SIZE;
+            self.data[start..start + self.frames as usize].fill(0.0);
+        }
     }
 
     /// Add (mix) another buffer's samples into this one.
@@ -153,6 +158,7 @@ impl AudioBuffer {
         if self.channels < 2 {
             return;
         }
+        let pan = pan.clamp(-1.0, 1.0);
         // Constant-power pan: left = cos(θ), right = sin(θ)
         // where θ = (pan + 1) * π/4
         let theta = (pan + 1.0) * std::f32::consts::FRAC_PI_4;

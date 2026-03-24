@@ -65,9 +65,12 @@ pub struct CallbackState {
 }
 
 // SAFETY: CallbackState is moved into the cpal audio callback closure and
-// accessed exclusively from the audio thread after that point. The raw pointers
-// inside AudioGraph (buffer slices) are only accessed from the audio callback.
-// No concurrent access occurs.
+// accessed exclusively from the audio thread after that point.
+// AudioGraph contains Vec<Box<dyn AudioNode>> which is Send (trait bound),
+// and Vec<AudioBuffer> which is Send. The rtrb Consumer/Producer types
+// are Send (designed for cross-thread transfer). All other fields are
+// Send-safe primitives or Option wrappers thereof.
+// No concurrent access occurs after the move.
 unsafe impl Send for CallbackState {}
 
 /// The audio output callback. Called by cpal for each output buffer.
@@ -140,9 +143,9 @@ pub fn audio_callback(state: &mut CallbackState, output: &mut [f32], num_frames:
     // 6. Process audio graph
     state.graph.process(&context);
 
-    // 7. Check for recording overflow on track nodes
+    // 7. Check for recording overflow on track nodes (using cached graph indices)
     for track in &state.tracks {
-        if let Some(idx) = state.graph.find_node_index(track.track_node_id) {
+        if let Some(idx) = track.track_node_graph_index {
             if let Some(track_node) = state
                 .graph
                 .node_downcast_mut::<crate::graph::nodes::track_node::TrackNode>(idx)

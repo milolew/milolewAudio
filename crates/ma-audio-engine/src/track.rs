@@ -35,6 +35,11 @@ pub struct Track {
     pub player_node_id: NodeId,
     pub track_node_id: NodeId,
 
+    /// Cached index of the TrackNode in the audio graph's nodes array.
+    /// Populated after graph construction to avoid O(N) linear scans
+    /// via `find_node_index()` on every audio callback.
+    pub track_node_graph_index: Option<usize>,
+
     /// Shared parameter handles (UI reads these atomics).
     pub volume: Arc<AtomicF32>,
     pub pan: Arc<AtomicF32>,
@@ -107,6 +112,7 @@ pub fn create_track(
         config,
         player_node_id,
         track_node_id,
+        track_node_graph_index: None, // populated after graph construction
         volume,
         pan,
         mute,

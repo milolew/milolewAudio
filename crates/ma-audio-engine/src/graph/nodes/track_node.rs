@@ -94,7 +94,15 @@ impl TrackNode {
         self.track_id
     }
 
-    /// Push audio samples to the recording ring buffer.
+    /// Push audio samples to the recording ring buffer in INTERLEAVED order.
+    ///
+    /// WAV files expect interleaved samples (L0 R0 L1 R1 ...), so we interleave
+    /// here at the source. The disk I/O thread writes samples directly to the
+    /// WAV file without reordering.
+    ///
+    /// Uses batch write (`write_chunk_uninit`) for better throughput — one atomic
+    /// operation instead of one per sample.
+    ///
     /// Returns the number of samples that were dropped due to buffer overflow.
     #[inline]
     fn push_to_record_buffer(&mut self, buffer: &AudioBuffer) -> usize {
@@ -105,23 +113,30 @@ impl TrackNode {
 
         let frames = buffer.frames() as usize;
         let channels = buffer.channels();
-        let mut dropped = 0;
+        let total_samples = frames * channels;
 
-        // Write non-interleaved: all of channel 0, then all of channel 1
-        for ch in 0..channels {
-            for &sample in buffer.channel(ch) {
-                if producer.push(sample).is_err() {
-                    dropped += 1;
+        match producer.write_chunk_uninit(total_samples) {
+            Ok(mut chunk) => {
+                let (first, second) = chunk.as_mut_slices();
+                let mut written = 0;
+                // Write interleaved: L0 R0 L1 R1 ...
+                for frame in 0..frames {
+                    for ch in 0..channels {
+                        let sample = buffer.channel(ch)[frame];
+                        if written < first.len() {
+                            first[written].write(sample);
+                        } else {
+                            second[written - first.len()].write(sample);
+                        }
+                        written += 1;
+                    }
                 }
+                // SAFETY: We initialized exactly `total_samples` elements above.
+                unsafe { chunk.commit_all() };
+                0
             }
+            Err(_) => total_samples, // ring buffer full — all samples dropped
         }
-
-        // Also write frame count and channel count as metadata?
-        // No — the disk thread knows the format (same channels, continuous stream).
-        // It just reads raw f32 samples in the same non-interleaved order.
-
-        let _ = frames; // suppress unused warning in release
-        dropped
     }
 }
 

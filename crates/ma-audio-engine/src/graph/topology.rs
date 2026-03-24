@@ -39,14 +39,6 @@ pub struct AudioGraph {
 
     /// Mapping: for each node index, which buffer indices are its outputs.
     node_output_buffers: Vec<Vec<usize>>,
-
-    /// Pre-allocated scratch space for input buffer pointers during process().
-    /// Avoids heap allocation on the real-time audio thread.
-    process_input_ptrs: Vec<*const AudioBuffer>,
-
-    /// Pre-allocated scratch space for output buffer pointers during process().
-    /// Avoids heap allocation on the real-time audio thread.
-    process_output_ptrs: Vec<*mut AudioBuffer>,
 }
 
 impl AudioGraph {
@@ -100,8 +92,6 @@ impl AudioGraph {
             }
         }
 
-        let edge_count = edges.len();
-
         Self {
             nodes,
             edges,
@@ -109,8 +99,6 @@ impl AudioGraph {
             buffers,
             node_input_buffers,
             node_output_buffers,
-            process_input_ptrs: Vec::with_capacity(edge_count),
-            process_output_ptrs: Vec::with_capacity(edge_count),
         }
     }
 
@@ -120,7 +108,8 @@ impl AudioGraph {
     /// input buffers and writes to its output buffers.
     ///
     /// # Real-Time Safety
-    /// This method is called on the audio thread. No allocations occur.
+    /// This method is called on the audio thread. No heap allocations occur.
+    /// Buffer pointers are gathered into stack-allocated arrays (max 16 IO per node).
     #[inline]
     pub fn process(&mut self, context: &ProcessContext) {
         // Update frame count on all buffers
@@ -129,46 +118,68 @@ impl AudioGraph {
             buf.clear();
         }
 
-        let buf_ptr = self.buffers.as_mut_ptr();
+        // Maximum inputs or outputs per node. 16 is generous headroom —
+        // typical DAW nodes have 0–4 inputs and 1–2 outputs.
+        const MAX_NODE_IO: usize = 16;
+
+        let buf_base = self.buffers.as_mut_ptr();
+        let buf_len = self.buffers.len();
 
         for &node_idx in &self.schedule {
             let input_indices = &self.node_input_buffers[node_idx];
             let output_indices = &self.node_output_buffers[node_idx];
 
-            // Gather input pointers — clear() reuses existing capacity, no allocation.
-            self.process_input_ptrs.clear();
-            for &idx in input_indices {
-                self.process_input_ptrs
-                    .push(unsafe { buf_ptr.add(idx) as *const AudioBuffer });
+            // Gather buffer pointers into stack-allocated arrays (no heap allocation).
+            let mut in_ptrs: [*const AudioBuffer; MAX_NODE_IO] = [std::ptr::null(); MAX_NODE_IO];
+            let in_count = input_indices.len().min(MAX_NODE_IO);
+            for (i, &idx) in input_indices.iter().take(MAX_NODE_IO).enumerate() {
+                debug_assert!(idx < buf_len, "input buffer index out of range");
+                in_ptrs[i] = unsafe { buf_base.add(idx) };
             }
 
-            // Gather output pointers — clear() reuses existing capacity, no allocation.
-            self.process_output_ptrs.clear();
-            for &idx in output_indices {
-                self.process_output_ptrs.push(unsafe { buf_ptr.add(idx) });
+            let mut out_ptrs: [*mut AudioBuffer; MAX_NODE_IO] = [std::ptr::null_mut(); MAX_NODE_IO];
+            let out_count = output_indices.len().min(MAX_NODE_IO);
+            for (i, &idx) in output_indices.iter().take(MAX_NODE_IO).enumerate() {
+                debug_assert!(idx < buf_len, "output buffer index out of range");
+                out_ptrs[i] = unsafe { buf_base.add(idx) };
+            }
+
+            // Debug: verify input and output buffer index sets are disjoint.
+            #[cfg(debug_assertions)]
+            for &in_idx in input_indices {
+                for &out_idx in output_indices {
+                    debug_assert_ne!(
+                        in_idx, out_idx,
+                        "node {} has overlapping input/output buffer index {}",
+                        node_idx, in_idx
+                    );
+                }
             }
 
             // SAFETY:
-            // 1. *const AudioBuffer has the same layout as &AudioBuffer (both are pointers).
-            // 2. *mut AudioBuffer has the same layout as &mut AudioBuffer.
-            // 3. All pointers are valid — they point into self.buffers which outlives this call.
-            // 4. Input and output buffer sets are disjoint for any single node (DAG property).
-            // 5. Topological order ensures inputs are written before being read.
-            // 6. References exist only within this scope and do not escape.
-            let input_refs: &[&AudioBuffer] = unsafe {
-                std::slice::from_raw_parts(
-                    self.process_input_ptrs.as_ptr() as *const &AudioBuffer,
-                    self.process_input_ptrs.len(),
-                )
+            // 1. All pointers are valid and aligned — derived from buf_base which
+            //    points into self.buffers, a contiguous Vec that outlives this call.
+            // 2. *const AudioBuffer and &AudioBuffer have identical size and alignment
+            //    (both are thin pointers to a sized type).
+            // 3. *mut AudioBuffer and &mut AudioBuffer have identical size and alignment.
+            // 4. Input and output buffer index sets are DISJOINT for each node —
+            //    enforced by the DAG construction (an edge's from_node output buffer
+            //    is the to_node's input buffer, never the same node's output).
+            // 5. Topological order guarantees inputs are fully written by previous
+            //    nodes before being read by this node.
+            // 6. No two output indices for a single node are the same.
+            // 7. References exist only within this loop iteration and do not escape.
+            let inputs: &[&AudioBuffer] = unsafe {
+                std::slice::from_raw_parts(in_ptrs.as_ptr() as *const &AudioBuffer, in_count)
             };
-            let output_refs: &mut [&mut AudioBuffer] = unsafe {
+            let outputs: &mut [&mut AudioBuffer] = unsafe {
                 std::slice::from_raw_parts_mut(
-                    self.process_output_ptrs.as_mut_ptr() as *mut &mut AudioBuffer,
-                    self.process_output_ptrs.len(),
+                    out_ptrs.as_mut_ptr() as *mut &mut AudioBuffer,
+                    out_count,
                 )
             };
 
-            self.nodes[node_idx].process(input_refs, output_refs, context);
+            self.nodes[node_idx].process(inputs, outputs, context);
         }
     }
 
@@ -263,14 +274,18 @@ fn topological_sort(
         }
     }
 
-    // If result.len() != n, there's a cycle (should never happen in a valid DAG)
-    debug_assert_eq!(
-        result.len(),
-        n,
-        "Audio graph contains a cycle! {} nodes, but only {} in topological order",
-        n,
-        result.len()
-    );
+    // If result.len() != n, there's a cycle (should never happen in a valid DAG).
+    // In release builds, log the error and return what we have — nodes in the
+    // cycle simply won't process (output silence).
+    if result.len() != n {
+        log::error!(
+            "Audio graph cycle detected: {} nodes total, but only {} in topological order. \
+             {} nodes will be skipped (silent).",
+            n,
+            result.len(),
+            n - result.len()
+        );
+    }
 
     result
 }

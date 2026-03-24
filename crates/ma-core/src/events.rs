@@ -59,11 +59,22 @@ pub enum DeviceErrorKind {
     DeviceDisconnected,
 
     /// The audio stream encountered an error.
-    StreamError(String),
+    StreamError(StreamErrorCode),
 
     /// The requested sample rate is not supported.
     UnsupportedSampleRate(u32),
 
     /// The requested buffer size is not supported.
     UnsupportedBufferSize(u32),
+}
+
+/// Stream error codes — fixed-size enum, safe for lock-free ring buffers.
+/// No heap allocation (replaces the previous `String` variant which could
+/// trigger deallocation on the audio thread).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamErrorCode {
+    Overflow,
+    Underflow,
+    DeviceLost,
+    Unknown,
 }

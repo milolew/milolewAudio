@@ -24,8 +24,6 @@ pub struct RealEngineBridge {
     tempo: f64,
     /// Sample rate for sample-to-tick conversion.
     sample_rate: f64,
-    /// Pre-allocated response buffer to avoid per-frame allocation.
-    response_buf: Vec<EngineResponse>,
 }
 
 impl RealEngineBridge {
@@ -37,7 +35,6 @@ impl RealEngineBridge {
             last_recording: false,
             tempo: 120.0,
             sample_rate,
-            response_buf: Vec::with_capacity(64),
         }
     }
 
@@ -56,30 +53,31 @@ impl RealEngineBridge {
     }
 
     /// Poll all pending engine events and translate to UI responses.
+    /// Writes into the caller-owned buffer to avoid per-frame allocation.
     ///
     /// Also reads atomic playhead position and recording state.
-    pub fn poll_responses(&mut self) -> Vec<EngineResponse> {
-        self.response_buf.clear();
+    pub fn poll_responses(&mut self, out: &mut Vec<EngineResponse>) {
+        out.clear();
 
         // Drain all events from the engine
         while let Ok(event) = self.handle.event_consumer.pop() {
             match event {
                 EngineEvent::CpuLoad(load) => {
-                    self.response_buf.push(EngineResponse::CpuLoad(load));
+                    out.push(EngineResponse::CpuLoad(load));
                 }
                 EngineEvent::PeakMeter {
                     track_id,
                     left,
                     right,
                 } => {
-                    self.response_buf.push(EngineResponse::MeterUpdate {
+                    out.push(EngineResponse::MeterUpdate {
                         track_id,
                         peak_l: left,
                         peak_r: right,
                     });
                 }
                 EngineEvent::MasterPeakMeter { .. } => {
-                    // TODO: add master meter to UI responses
+                    // TODO(#XX): add master meter to UI responses — needed for master bus display
                 }
                 EngineEvent::TransportStateChanged(state) => {
                     self.last_playing = state == TransportState::Playing;
@@ -87,7 +85,7 @@ impl RealEngineBridge {
                 }
                 EngineEvent::PlayheadPosition(samples) => {
                     let ticks = self.samples_to_ticks(samples);
-                    self.response_buf.push(EngineResponse::TransportUpdate {
+                    out.push(EngineResponse::TransportUpdate {
                         position: ticks,
                         is_playing: self.last_playing,
                         is_recording: self.last_recording,
@@ -101,13 +99,11 @@ impl RealEngineBridge {
         let playhead_samples = self.handle.playhead_position.load(Ordering::Relaxed);
         let is_recording = self.handle.is_recording.load(Ordering::Relaxed);
 
-        self.response_buf.push(EngineResponse::TransportUpdate {
+        out.push(EngineResponse::TransportUpdate {
             position: self.samples_to_ticks(playhead_samples),
             is_playing: self.last_playing,
             is_recording,
         });
-
-        self.response_buf.drain(..).collect()
     }
 
     /// Get track handles for reading atomic parameters.

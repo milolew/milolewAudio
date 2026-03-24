@@ -34,6 +34,9 @@ pub const PPQN: Tick = 960;
 /// * `tempo_bpm` - Tempo in beats per minute
 /// * `sample_rate` - Audio sample rate (e.g., 48000.0)
 pub fn ticks_to_samples(tick: Tick, tempo_bpm: f64, sample_rate: f64) -> SamplePos {
+    if tempo_bpm <= 0.0 || sample_rate <= 0.0 {
+        return 0;
+    }
     let seconds_per_tick = 60.0 / (tempo_bpm * PPQN as f64);
     (tick as f64 * seconds_per_tick * sample_rate) as SamplePos
 }
@@ -42,6 +45,9 @@ pub fn ticks_to_samples(tick: Tick, tempo_bpm: f64, sample_rate: f64) -> SampleP
 ///
 /// Formula: ticks = samples * tempo_bpm * PPQN / (60.0 * sample_rate)
 pub fn samples_to_ticks(sample: SamplePos, tempo_bpm: f64, sample_rate: f64) -> Tick {
+    if tempo_bpm <= 0.0 || sample_rate <= 0.0 {
+        return 0;
+    }
     let ticks_per_sample = (tempo_bpm * PPQN as f64) / (60.0 * sample_rate);
     (sample as f64 * ticks_per_sample) as Tick
 }
@@ -62,8 +68,10 @@ impl BarBeatTick {
     /// * `numerator` - Time signature numerator (e.g., 4 for 4/4)
     /// * `denominator` - Time signature denominator (e.g., 4 for 4/4)
     pub fn from_ticks(absolute_tick: Tick, numerator: u8, denominator: u8) -> Self {
-        let ticks_per_beat = PPQN * 4 / denominator as Tick;
-        let ticks_per_bar = ticks_per_beat * numerator as Tick;
+        let denominator = (denominator as Tick).max(1);
+        let numerator = (numerator as Tick).max(1);
+        let ticks_per_beat = PPQN * 4 / denominator;
+        let ticks_per_bar = ticks_per_beat * numerator;
 
         let tick = absolute_tick.max(0);
         let bar = (tick / ticks_per_bar) as u32 + 1; // 1-indexed
@@ -144,6 +152,38 @@ mod tests {
                 tick: 0
             }
         );
+    }
+
+    #[test]
+    fn zero_tempo_returns_zero() {
+        assert_eq!(ticks_to_samples(960, 0.0, 48000.0), 0);
+        assert_eq!(samples_to_ticks(24000, 0.0, 48000.0), 0);
+    }
+
+    #[test]
+    fn zero_sample_rate_returns_zero() {
+        assert_eq!(ticks_to_samples(960, 120.0, 0.0), 0);
+        assert_eq!(samples_to_ticks(24000, 120.0, 0.0), 0);
+    }
+
+    #[test]
+    fn negative_tempo_returns_zero() {
+        assert_eq!(ticks_to_samples(960, -120.0, 48000.0), 0);
+        assert_eq!(samples_to_ticks(24000, -120.0, 48000.0), 0);
+    }
+
+    #[test]
+    fn bar_beat_tick_zero_denominator_clamped() {
+        // Should not panic — denominator clamped to 1
+        let bbt = BarBeatTick::from_ticks(0, 4, 0);
+        assert_eq!(bbt.bar, 1);
+    }
+
+    #[test]
+    fn bar_beat_tick_zero_numerator_clamped() {
+        // Should not panic — numerator clamped to 1
+        let bbt = BarBeatTick::from_ticks(0, 0, 4);
+        assert_eq!(bbt.bar, 1);
     }
 
     #[test]

@@ -15,22 +15,50 @@ use super::bridge::EngineEndpoint;
 use super::commands::EngineCommand;
 use super::responses::EngineResponse;
 
+/// Per-track state for the mock engine.
+struct MockTrackState {
+    id: TrackId,
+    volume: f32,
+    pan: f32,
+    mute: bool,
+    solo: bool,
+}
+
 /// Simulated engine state.
 struct MockState {
     is_playing: bool,
     is_recording: bool,
     position: Tick,
     tempo: f64,
+    track_states: Vec<MockTrackState>,
 }
 
-impl Default for MockState {
-    fn default() -> Self {
+impl MockState {
+    fn new(track_ids: &[TrackId]) -> Self {
         Self {
             is_playing: false,
             is_recording: false,
             position: 0,
             tempo: 120.0,
+            track_states: track_ids
+                .iter()
+                .map(|&id| MockTrackState {
+                    id,
+                    volume: 1.0,
+                    pan: 0.0,
+                    mute: false,
+                    solo: false,
+                })
+                .collect(),
         }
+    }
+
+    fn find_track_mut(&mut self, id: TrackId) -> Option<&mut MockTrackState> {
+        self.track_states.iter_mut().find(|t| t.id == id)
+    }
+
+    fn any_solo(&self) -> bool {
+        self.track_states.iter().any(|t| t.solo)
     }
 }
 
@@ -93,7 +121,7 @@ fn run_mock_engine(
     track_ids: Vec<TrackId>,
     shutdown: Arc<AtomicBool>,
 ) {
-    let mut state = MockState::default();
+    let mut state = MockState::new(&track_ids);
     let mut last_tick = Instant::now();
     let frame_duration = Duration::from_millis(16); // ~60 Hz
 
@@ -128,7 +156,27 @@ fn run_mock_engine(
                     state.tempo = bpm;
                     let _ = endpoint.response_tx.push(EngineResponse::TempoUpdate(bpm));
                 }
-                // Other commands are acknowledged but not simulated
+                EngineCommand::SetTrackVolume { track_id, volume } => {
+                    if let Some(t) = state.find_track_mut(track_id) {
+                        t.volume = volume;
+                    }
+                }
+                EngineCommand::SetTrackPan { track_id, pan } => {
+                    if let Some(t) = state.find_track_mut(track_id) {
+                        t.pan = pan;
+                    }
+                }
+                EngineCommand::SetTrackMute { track_id, mute } => {
+                    if let Some(t) = state.find_track_mut(track_id) {
+                        t.mute = mute;
+                    }
+                }
+                EngineCommand::SetTrackSolo { track_id, solo } => {
+                    if let Some(t) = state.find_track_mut(track_id) {
+                        t.solo = solo;
+                    }
+                }
+                // MIDI preview and note editing — acknowledged but not audible in mock mode
                 _ => {}
             }
         }
@@ -143,17 +191,19 @@ fn run_mock_engine(
             is_recording: state.is_recording,
         });
 
-        // Send fake meter updates (sine wave simulation)
+        // Send fake meter updates (sine wave simulation), respecting mute/solo/volume
         let t = now.elapsed().as_secs_f64();
-        for (i, track_id) in track_ids.iter().enumerate() {
+        let any_solo = state.any_solo();
+        for (i, ts) in state.track_states.iter().enumerate() {
             let phase = t * 2.0 + i as f64 * 0.5;
-            let level = if state.is_playing {
-                (0.3 + 0.2 * phase.sin() as f32).clamp(0.0, 1.0)
+            let muted = ts.mute || (any_solo && !ts.solo);
+            let level = if state.is_playing && !muted {
+                ((0.3 + 0.2 * phase.sin() as f32) * ts.volume).clamp(0.0, 1.0)
             } else {
                 0.0
             };
             let _ = endpoint.response_tx.push(EngineResponse::MeterUpdate {
-                track_id: *track_id,
+                track_id: ts.id,
                 peak_l: level,
                 peak_r: level * 0.9,
             });

@@ -52,8 +52,12 @@ impl WavPlayerNode {
     /// Add a clip to this player. Called from command processor (beginning of audio callback).
     ///
     /// Returns false if the clip list is at capacity (should not happen in normal operation).
+    ///
+    /// # Real-time safety
+    /// The Vec was pre-allocated with `max_clips` capacity at construction.
+    /// We verify `len < capacity` to guarantee `push()` will NOT allocate.
     pub fn add_clip(&mut self, clip: AudioClipRef) -> bool {
-        if self.clips.len() >= self.max_clips {
+        if self.clips.len() >= self.max_clips || self.clips.len() >= self.clips.capacity() {
             return false;
         }
         self.clips.push(clip);
@@ -61,8 +65,19 @@ impl WavPlayerNode {
     }
 
     /// Remove a clip by ID. Called from command processor.
+    ///
+    /// Uses `swap_remove` for O(1) removal without iteration.
+    /// Clip ordering does not matter for playback (all clips are checked each callback).
+    ///
+    /// # Real-time safety
+    /// The removed `AudioClipRef` contains `Arc<[f32]>`. The project state on the UI
+    /// thread holds another Arc reference, so the audio thread will NOT drop the last
+    /// reference here (no deallocation). If this invariant ever changes, clips should
+    /// be moved to a GC ring buffer instead of being dropped in-place.
     pub fn remove_clip(&mut self, clip_id: ClipId) {
-        self.clips.retain(|c| c.clip_id != clip_id);
+        if let Some(pos) = self.clips.iter().position(|c| c.clip_id == clip_id) {
+            self.clips.swap_remove(pos);
+        }
     }
 
     /// Render audio for the current playhead position into the output buffer.

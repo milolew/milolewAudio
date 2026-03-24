@@ -8,7 +8,6 @@ description = "Shared types between audio engine and GUI for milolew Audio DAW"
 [dependencies]
 uuid = { workspace = true }
 serde = { workspace = true }
-thiserror = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

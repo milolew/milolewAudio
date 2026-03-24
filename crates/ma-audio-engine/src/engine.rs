@@ -243,6 +243,11 @@ pub fn build_engine(config: EngineConfig) -> (CallbackState, EngineHandle) {
     let input_node_graph_index = graph.find_node_index(input_node_id);
     let output_node_graph_index = graph.find_node_index(output_node_id);
 
+    // Cache track node graph indices to avoid O(N) scans in the audio callback
+    for track in &mut tracks {
+        track.track_node_graph_index = graph.find_node_index(track.track_node_id);
+    }
+
     let callback_state = CallbackState {
         command_consumer,
         event_producer,

@@ -110,10 +110,12 @@ pub fn process_commands(
             }
             EngineCommand::StartRecording => {
                 transport.start_recording();
-                // Set is_recording on all armed track nodes
+                // Set is_recording on all armed track nodes (using cached graph index)
                 for track in tracks {
                     if track.record_armed.load(Ordering::Relaxed) {
-                        set_track_node_recording(graph, track.track_node_id.0, true);
+                        if let Some(idx) = track.track_node_graph_index {
+                            set_track_node_recording(graph, idx, true);
+                        }
                     }
                 }
                 let _ = event_producer.push(EngineEvent::TransportStateChanged(
@@ -122,9 +124,11 @@ pub fn process_commands(
             }
             EngineCommand::StopRecording => {
                 transport.stop_recording();
-                // Clear is_recording on all track nodes
+                // Clear is_recording on all track nodes (using cached graph index)
                 for track in tracks {
-                    set_track_node_recording(graph, track.track_node_id.0, false);
+                    if let Some(idx) = track.track_node_graph_index {
+                        set_track_node_recording(graph, idx, false);
+                    }
                 }
                 let _ = event_producer.push(EngineEvent::TransportStateChanged(transport.state()));
             }
@@ -147,17 +151,10 @@ fn find_track(tracks: &[crate::track::Track], id: TrackId) -> Option<&crate::tra
     tracks.iter().find(|t| t.id == id)
 }
 
-/// Set the is_recording flag on a track node by its NodeId value.
-fn set_track_node_recording(graph: &mut AudioGraph, node_id_val: u32, recording: bool) {
-    // Find the node and try to downcast to TrackNode
-    for i in 0..graph.node_count() {
-        if let Some(node) = graph.node(i) {
-            if node.node_id() == ma_core::ids::NodeId(node_id_val) {
-                if let Some(track_node) = graph.node_downcast_mut::<TrackNode>(i) {
-                    track_node.is_recording.store(recording, Ordering::Relaxed);
-                }
-                break;
-            }
-        }
+/// Set the is_recording flag on a track node using its cached graph index.
+#[inline]
+fn set_track_node_recording(graph: &mut AudioGraph, graph_index: usize, recording: bool) {
+    if let Some(track_node) = graph.node_downcast_mut::<TrackNode>(graph_index) {
+        track_node.is_recording.store(recording, Ordering::Relaxed);
     }
 }

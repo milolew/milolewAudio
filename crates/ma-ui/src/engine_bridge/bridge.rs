@@ -59,12 +59,12 @@ impl EngineBridge {
         }
     }
 
-    /// Drain all available responses from the engine. Called once per frame.
-    pub fn poll_responses(&mut self) -> Vec<EngineResponse> {
-        let mut responses = Vec::new();
+    /// Drain all available responses from the engine into the provided buffer.
+    /// Called once per frame. The caller owns the buffer to avoid per-frame allocation.
+    pub fn poll_responses(&mut self, out: &mut Vec<EngineResponse>) {
+        out.clear();
         while let Ok(resp) = self.response_rx.pop() {
-            responses.push(resp);
+            out.push(resp);
         }
-        responses
     }
 }

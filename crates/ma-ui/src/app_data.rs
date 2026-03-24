@@ -52,6 +52,10 @@ pub struct AppData {
 
     #[lens(ignore)]
     engine: EngineMode,
+
+    /// Pre-allocated buffer for engine responses — reused each frame to avoid allocation.
+    #[lens(ignore)]
+    response_buf: Vec<EngineResponse>,
 }
 
 /// Engine connection mode.
@@ -334,6 +338,7 @@ impl AppData {
             device_latency,
             show_preferences: false,
             engine,
+            response_buf: Vec::with_capacity(64),
         }
     }
 
@@ -377,15 +382,14 @@ impl AppData {
 
     /// Send a UI command to whichever engine is active.
     fn send_command(&mut self, cmd: EngineCommand) {
-        match &mut self.engine {
-            EngineMode::Real { bridge, .. } => {
-                if let Some(core_cmd) = Self::translate_command(&cmd) {
-                    bridge.send_command(core_cmd);
-                }
-            }
-            EngineMode::Mock { bridge, .. } => {
-                bridge.send_command(cmd);
-            }
+        let sent = match &mut self.engine {
+            EngineMode::Real { bridge, .. } => Self::translate_command(&cmd)
+                .map(|core_cmd| bridge.send_command(core_cmd))
+                .unwrap_or(true),
+            EngineMode::Mock { bridge, .. } => bridge.send_command(cmd),
+        };
+        if !sent {
+            log::error!("Engine command dropped — ring buffer full");
         }
     }
 
@@ -422,36 +426,41 @@ impl AppData {
     // -- Poll engine responses --
 
     fn poll_engine(&mut self) {
-        let responses = match &mut self.engine {
-            EngineMode::Real { bridge, .. } => bridge.poll_responses(),
-            EngineMode::Mock { bridge, .. } => bridge.poll_responses(),
+        // Take the pre-allocated buffer to avoid borrow conflicts between
+        // self.engine and self.transport/self.mixer during response processing.
+        let mut responses = std::mem::take(&mut self.response_buf);
+        match &mut self.engine {
+            EngineMode::Real { bridge, .. } => bridge.poll_responses(&mut responses),
+            EngineMode::Mock { bridge, .. } => bridge.poll_responses(&mut responses),
         };
-        for resp in responses {
+        for resp in &responses {
             match resp {
                 EngineResponse::TransportUpdate {
                     position,
                     is_playing,
                     is_recording,
                 } => {
-                    self.transport.position = position;
-                    self.transport.is_playing = is_playing;
-                    self.transport.is_recording = is_recording;
+                    self.transport.position = *position;
+                    self.transport.is_playing = *is_playing;
+                    self.transport.is_recording = *is_recording;
                 }
                 EngineResponse::TempoUpdate(bpm) => {
-                    self.transport.tempo = bpm;
+                    self.transport.tempo = *bpm;
                 }
                 EngineResponse::MeterUpdate {
                     track_id,
                     peak_l,
                     peak_r,
                 } => {
-                    self.mixer.update_meter(track_id, peak_l, peak_r);
+                    self.mixer.update_meter(*track_id, *peak_l, *peak_r);
                 }
                 EngineResponse::CpuLoad(load) => {
-                    self.mixer.cpu_load = load;
+                    self.mixer.cpu_load = *load;
                 }
             }
         }
+        // Return the buffer for reuse next frame
+        self.response_buf = responses;
     }
 
     // -- Dispatch helpers --
@@ -490,8 +499,11 @@ impl AppData {
         };
 
         match event {
-            AppEvent::AddNote(mut note) => {
-                note.id = self.piano_roll.alloc_note_id();
+            AppEvent::AddNote(note) => {
+                let note = Note {
+                    id: self.piano_roll.alloc_note_id(),
+                    ..*note
+                };
                 if let Some(clip) = self.clips.iter().find(|c| c.id == clip_id) {
                     let new_clip = clip.with_note_added(note);
                     self.update_clip(new_clip);
