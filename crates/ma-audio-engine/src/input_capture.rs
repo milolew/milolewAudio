@@ -5,6 +5,8 @@
 //! - `InputCaptureState` — owned by the cpal INPUT stream closure, pushes samples to ring buffer
 //! - `InputCaptureReader` — owned by `CallbackState` (OUTPUT closure), drains samples before graph processing
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 /// Ring buffer size for input capture (samples, not frames).
 /// Sized for 48kHz stereo with 256-frame buffer: 256 * 2 = 512 min.
 /// Use 32x headroom for scheduling jitter between input/output callbacks.
@@ -17,6 +19,8 @@ pub const INPUT_CAPTURE_RING_SIZE: usize = 16384;
 pub struct InputCaptureState {
     producer: rtrb::Producer<f32>,
     channel_count: usize,
+    /// Number of samples dropped due to ring buffer overflow.
+    overflow_samples: AtomicU64,
 }
 
 impl InputCaptureState {
@@ -24,11 +28,13 @@ impl InputCaptureState {
         Self {
             producer,
             channel_count,
+            overflow_samples: AtomicU64::new(0),
         }
     }
 
     /// Called by cpal input callback. Pushes raw interleaved samples.
-    /// If the ring buffer is full, excess samples are silently dropped (acceptable for monitoring).
+    /// If the ring buffer is full, excess samples are dropped and counted
+    /// in `overflow_samples`.
     ///
     /// # Real-Time Safety
     /// This function is lock-free and allocation-free. Uses batch write for cache efficiency.
@@ -36,6 +42,12 @@ impl InputCaptureState {
     pub fn capture(&mut self, input: &[f32]) {
         let available = self.producer.slots();
         let to_write = input.len().min(available);
+        let dropped = input.len() - to_write;
+        if dropped > 0 {
+            // ORDERING: Relaxed OK — single-value counter, eventual consistency
+            self.overflow_samples
+                .fetch_add(dropped as u64, Ordering::Relaxed);
+        }
         if to_write == 0 {
             return;
         }
@@ -56,6 +68,11 @@ impl InputCaptureState {
 
     pub fn channel_count(&self) -> usize {
         self.channel_count
+    }
+
+    /// Take the current overflow sample count, resetting it to zero.
+    pub fn take_overflow_samples(&self) -> u64 {
+        self.overflow_samples.swap(0, Ordering::Relaxed)
     }
 }
 
@@ -190,5 +207,51 @@ mod tests {
         // Should drain up to ring buffer capacity, no panic
         let output = reader.drain_into_staging(256);
         assert_eq!(output.len(), 256);
+    }
+
+    #[test]
+    fn overflow_counter_tracks_dropped_samples() {
+        let (mut capture, _reader) = create_input_capture(1, 256);
+
+        // Fill the ring buffer completely
+        let fill: Vec<f32> = vec![0.5; INPUT_CAPTURE_RING_SIZE];
+        capture.capture(&fill);
+        assert_eq!(capture.take_overflow_samples(), 0);
+
+        // Now push more — these should overflow
+        let overflow: Vec<f32> = vec![1.0; 500];
+        capture.capture(&overflow);
+        let dropped = capture.take_overflow_samples();
+        assert_eq!(dropped, 500);
+
+        // Counter should be reset after take
+        assert_eq!(capture.take_overflow_samples(), 0);
+    }
+
+    #[test]
+    fn e2e_recording_with_overflow_counter() {
+        // Simulate a full recording path: capture → overflow → verify counter
+        let (mut capture, mut reader) = create_input_capture(2, 256);
+
+        // Simulate 10 callbacks of stereo audio
+        for i in 0..10 {
+            let input: Vec<f32> = (0..512).map(|j| (i * 512 + j) as f32 * 0.001).collect();
+            capture.capture(&input);
+        }
+        // 10 * 512 = 5120 samples pushed, ring buffer is 16384, no overflow
+        assert_eq!(capture.take_overflow_samples(), 0);
+
+        // Drain and verify data integrity
+        let output = reader.drain_into_staging(256);
+        assert_eq!(output.len(), 512); // 256 frames * 2 channels
+                                       // First samples should match what we pushed
+        assert!((output[0] - 0.0).abs() < 1e-6);
+        assert!((output[1] - 0.001).abs() < 1e-6);
+
+        // Now overflow the buffer
+        let huge: Vec<f32> = vec![0.99; INPUT_CAPTURE_RING_SIZE + 1000];
+        capture.capture(&huge);
+        let dropped = capture.take_overflow_samples();
+        assert!(dropped > 0, "Expected some samples to be dropped");
     }
 }

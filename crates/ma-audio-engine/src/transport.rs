@@ -66,6 +66,7 @@ impl Transport {
     /// Current playhead position in samples.
     #[inline]
     pub fn position(&self) -> SamplePos {
+        // ORDERING: Relaxed OK — audio thread reading its own atomic (writer == reader)
         self.position.load(Ordering::Relaxed)
     }
 
@@ -98,9 +99,10 @@ impl Transport {
     /// Stop playback and return to the position where play was started.
     pub fn stop(&mut self) {
         self.state = TransportState::Stopped;
-        self.is_recording.store(false, Ordering::Relaxed);
+        // ORDERING: Release — cross-thread state read by UI with Acquire
+        self.is_recording.store(false, Ordering::Release);
         self.position
-            .store(self.play_start_position, Ordering::Relaxed);
+            .store(self.play_start_position, Ordering::Release);
     }
 
     /// Pause at current position.
@@ -112,7 +114,8 @@ impl Transport {
 
     /// Seek to a specific sample position.
     pub fn set_position(&mut self, pos: SamplePos) {
-        self.position.store(pos, Ordering::Relaxed);
+        // ORDERING: Release — cross-thread state read by UI with Acquire
+        self.position.store(pos, Ordering::Release);
         if self.state == TransportState::Stopped {
             self.play_start_position = pos;
         }
@@ -136,12 +139,14 @@ impl Transport {
             self.play();
         }
         self.state = TransportState::Recording;
-        self.is_recording.store(true, Ordering::Relaxed);
+        // ORDERING: Release — cross-thread state read by UI with Acquire
+        self.is_recording.store(true, Ordering::Release);
     }
 
     /// Stop recording (keeps playing).
     pub fn stop_recording(&mut self) {
-        self.is_recording.store(false, Ordering::Relaxed);
+        // ORDERING: Release — cross-thread state read by UI with Acquire
+        self.is_recording.store(false, Ordering::Release);
         if self.state == TransportState::Recording {
             self.state = TransportState::Playing;
         }
@@ -166,7 +171,8 @@ impl Transport {
                     new_pos = self.loop_start + (new_pos - self.loop_end);
                 }
 
-                self.position.store(new_pos, Ordering::Relaxed);
+                // ORDERING: Release — cross-thread state read by UI with Acquire
+                self.position.store(new_pos, Ordering::Release);
             }
             TransportState::Stopped | TransportState::Paused => {
                 // Don't advance

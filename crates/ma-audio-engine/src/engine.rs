@@ -126,7 +126,9 @@ impl NodeIdCounter {
 /// # Returns
 /// `(CallbackState, EngineHandle)` — the callback state is moved into
 /// the cpal closure, the handle is given to the UI.
-pub fn build_engine(config: EngineConfig) -> (CallbackState, EngineHandle) {
+pub fn build_engine(
+    config: EngineConfig,
+) -> Result<(CallbackState, EngineHandle), crate::graph::topology::TopologyError> {
     let mut node_counter = NodeIdCounter::new();
 
     // Create ring buffers for UI ↔ Engine communication
@@ -237,7 +239,7 @@ pub fn build_engine(config: EngineConfig) -> (CallbackState, EngineHandle) {
     });
 
     // Build the audio graph
-    let graph = AudioGraph::new(all_nodes, edges, config.buffer_size);
+    let graph = AudioGraph::new(all_nodes, edges, config.buffer_size)?;
 
     // Find node indices for the callback
     let input_node_graph_index = graph.find_node_index(input_node_id);
@@ -260,6 +262,8 @@ pub fn build_engine(config: EngineConfig) -> (CallbackState, EngineHandle) {
         sample_rate: config.sample_rate as f32,
         last_callback_duration: std::time::Duration::ZERO,
         callback_count: 0,
+        has_panicked: std::sync::atomic::AtomicBool::new(false),
+        device_error_flag: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
     };
 
     let handle = EngineHandle {
@@ -275,7 +279,7 @@ pub fn build_engine(config: EngineConfig) -> (CallbackState, EngineHandle) {
         config,
     };
 
-    (callback_state, handle)
+    Ok((callback_state, handle))
 }
 
 #[cfg(test)]
@@ -286,7 +290,7 @@ mod tests {
     #[test]
     fn build_engine_with_no_tracks() {
         let config = EngineConfig::default();
-        let (state, handle) = build_engine(config);
+        let (state, handle) = build_engine(config).unwrap();
 
         assert!(state.tracks.is_empty());
         assert!(handle.tracks.is_empty());
@@ -325,7 +329,7 @@ mod tests {
             ],
         };
 
-        let (state, handle) = build_engine(config);
+        let (state, handle) = build_engine(config).unwrap();
 
         assert_eq!(state.tracks.len(), 2);
         assert_eq!(handle.tracks.len(), 2);
@@ -336,7 +340,7 @@ mod tests {
     #[test]
     fn engine_handle_sends_commands() {
         let config = EngineConfig::default();
-        let (mut state, mut handle) = build_engine(config);
+        let (mut state, mut handle) = build_engine(config).unwrap();
 
         // Send a command from UI
         handle.command_producer.push(EngineCommand::Play).unwrap();

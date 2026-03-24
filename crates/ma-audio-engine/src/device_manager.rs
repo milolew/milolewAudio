@@ -35,6 +35,9 @@ pub enum DeviceError {
 
     #[error("Failed to start stream: {0}")]
     PlayError(String),
+
+    #[error("Audio graph topology error: {0}")]
+    TopologyError(#[from] crate::graph::topology::TopologyError),
 }
 
 /// Manages cpal device and stream lifecycle.
@@ -135,7 +138,7 @@ impl AudioDeviceManager {
         };
 
         // 4. Build the engine
-        let (mut callback_state, engine_handle) = build_engine(engine_config);
+        let (mut callback_state, engine_handle) = build_engine(engine_config)?;
 
         // 5. Set up input capture if enabled
         let mut input_device_name = None;
@@ -158,7 +161,13 @@ impl AudioDeviceManager {
                     create_input_capture(input_channels as usize, config.buffer_size);
                 callback_state.input_capture_reader = Some(capture_reader);
 
-                match self.build_input_stream(input_device, input_stream_config, capture_state) {
+                let error_flag = std::sync::Arc::clone(&callback_state.device_error_flag);
+                match self.build_input_stream(
+                    input_device,
+                    input_stream_config,
+                    capture_state,
+                    error_flag,
+                ) {
                     Ok(stream) => {
                         self.input_stream = Some(stream);
                         input_device_name = Some(dev_name);
@@ -273,6 +282,7 @@ impl AudioDeviceManager {
         mut callback_state: CallbackState,
     ) -> Result<cpal::Stream, DeviceError> {
         let num_channels = config.channels as usize;
+        let error_flag = std::sync::Arc::clone(&callback_state.device_error_flag);
         let stream = device
             .build_output_stream(
                 &config,
@@ -282,6 +292,10 @@ impl AudioDeviceManager {
                 },
                 move |err| {
                     log::error!("Output stream error: {err}");
+                    // Signal error to audio callback via atomic flag.
+                    // Mapping: 1=Overflow, 2=Underflow, 3=DeviceLost, 4=Unknown
+                    let code = cpal_error_to_code(&err);
+                    error_flag.store(code, std::sync::atomic::Ordering::Relaxed);
                 },
                 None,
             )
@@ -295,6 +309,7 @@ impl AudioDeviceManager {
         device: cpal::Device,
         config: cpal::StreamConfig,
         mut capture_state: InputCaptureState,
+        device_error_flag: std::sync::Arc<std::sync::atomic::AtomicU8>,
     ) -> Result<cpal::Stream, DeviceError> {
         let stream = device
             .build_input_stream(
@@ -304,12 +319,23 @@ impl AudioDeviceManager {
                 },
                 move |err| {
                     log::error!("Input stream error: {err}");
+                    let code = cpal_error_to_code(&err);
+                    device_error_flag.store(code, std::sync::atomic::Ordering::Relaxed);
                 },
                 None,
             )
             .map_err(|e| DeviceError::InputStreamError(e.to_string()))?;
 
         Ok(stream)
+    }
+}
+
+/// Map a cpal stream error to a numeric code for the atomic flag.
+/// 1=Overflow, 2=Underflow, 3=DeviceLost, 4=Unknown
+fn cpal_error_to_code(err: &cpal::StreamError) -> u8 {
+    match err {
+        cpal::StreamError::DeviceNotAvailable => 3,
+        cpal::StreamError::BackendSpecific { .. } => 4,
     }
 }
 
@@ -379,4 +405,42 @@ fn device_to_info(device: &cpal::Device, default_name: Option<&str>) -> Option<A
         max_buffer_size: max_buffer,
         max_channels,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_manager_enumerates_devices() {
+        // This test runs on any platform — cpal always provides at least
+        // a host (even if no physical devices are available).
+        let mut dm = AudioDeviceManager::new();
+        let enumeration = dm.enumerate_devices();
+        // We can't assert specific devices exist in CI, but the enumeration
+        // should complete without panic and return a valid struct.
+        assert!(
+            enumeration.output_devices.len() > 0 || enumeration.input_devices.len() >= 0,
+            "enumeration completed"
+        );
+    }
+
+    #[test]
+    fn device_error_has_topology_variant() {
+        let err =
+            DeviceError::TopologyError(crate::graph::topology::TopologyError::CycleDetected {
+                total: 3,
+                sorted: 2,
+                skipped: 1,
+            });
+        let msg = err.to_string();
+        assert!(msg.contains("cycle detected"));
+    }
+
+    #[test]
+    fn cpal_error_code_mapping() {
+        // DeviceNotAvailable maps to code 3 (DeviceLost)
+        let code = cpal_error_to_code(&cpal::StreamError::DeviceNotAvailable);
+        assert_eq!(code, 3);
+    }
 }

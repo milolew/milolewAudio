@@ -11,6 +11,8 @@
 //! 4. Send meter events
 //! 5. Copy output to cpal buffer
 
+use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::time::Instant;
 
 use ma_core::audio_buffer::MAX_CHANNELS;
@@ -23,6 +25,16 @@ use crate::graph::topology::AudioGraph;
 use crate::input_capture::InputCaptureReader;
 use crate::track::Track;
 use crate::transport::Transport;
+
+/// Count of events dropped due to event ring buffer overflow.
+/// Incremented on the audio thread, read/reset from UI thread.
+static DROPPED_EVENTS: AtomicU32 = AtomicU32::new(0);
+
+/// Take the current dropped event count, resetting it to zero.
+/// Call this periodically from the UI thread.
+pub fn take_dropped_event_count() -> u32 {
+    DROPPED_EVENTS.swap(0, Ordering::Relaxed)
+}
 
 /// State held by the audio callback closure.
 ///
@@ -62,6 +74,15 @@ pub struct CallbackState {
 
     /// Callback counter for conditional CPU measurement (every 16th callback).
     pub callback_count: u64,
+
+    /// Set to `true` if the audio callback panicked. Once set, all subsequent
+    /// callbacks output silence. The UI should check this flag and show an error.
+    pub has_panicked: AtomicBool,
+
+    /// Set by cpal stream error callbacks to signal device errors.
+    /// The audio callback checks this flag and forwards it as an EngineEvent.
+    /// 0 = no error. Non-zero value is a `StreamErrorCode` discriminant + 1.
+    pub device_error_flag: std::sync::Arc<AtomicU8>,
 }
 
 // SAFETY: CallbackState is moved into the cpal audio callback closure and
@@ -75,15 +96,43 @@ unsafe impl Send for CallbackState {}
 
 /// The audio output callback. Called by cpal for each output buffer.
 ///
+/// Wraps the actual processing in `catch_unwind` so that a panic on the
+/// audio thread does not abort the process. On panic, the output buffer is
+/// filled with silence and `has_panicked` is set permanently.
+///
 /// # Arguments
 /// * `state` - Mutable reference to the callback state
 /// * `output` - cpal's interleaved output buffer to fill
 /// * `num_frames` - Number of frames in this callback
-///
-/// # Real-Time Safety
-/// This function MUST NOT: allocate, lock, do I/O, panic.
 #[inline]
 pub fn audio_callback(state: &mut CallbackState, output: &mut [f32], num_frames: u32) {
+    // If a previous callback panicked, output silence permanently.
+    // ORDERING: Relaxed OK — single-value flag, only transitions false→true
+    if state.has_panicked.load(Ordering::Relaxed) {
+        output.fill(0.0);
+        return;
+    }
+
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        audio_callback_inner(state, output, num_frames)
+    }));
+
+    if result.is_err() {
+        output.fill(0.0);
+        // ORDERING: Release — UI thread reads this with Acquire
+        state.has_panicked.store(true, Ordering::Release);
+        // Best-effort notification to UI (ring buffer push won't panic)
+        push_event(&mut state.event_producer, EngineEvent::AudioThreadPanic);
+    }
+}
+
+/// The actual audio callback body. Separated from `audio_callback` so that
+/// `catch_unwind` can wrap it without nesting.
+///
+/// # Real-Time Safety
+/// This function MUST NOT: allocate, lock, do I/O.
+#[inline]
+fn audio_callback_inner(state: &mut CallbackState, output: &mut [f32], num_frames: u32) {
     state.callback_count += 1;
     let measure_cpu = state.callback_count.is_multiple_of(16);
     let start = if measure_cpu {
@@ -107,6 +156,23 @@ pub fn audio_callback(state: &mut CallbackState, output: &mut [f32], num_frames:
         return;
     }
 
+    // 1b. Check for device errors reported by cpal error callbacks
+    let error_code = state.device_error_flag.swap(0, Ordering::Relaxed);
+    if error_code != 0 {
+        use ma_core::events::DeviceErrorKind;
+        use ma_core::events::StreamErrorCode;
+        let code = match error_code {
+            1 => StreamErrorCode::Overflow,
+            2 => StreamErrorCode::Underflow,
+            3 => StreamErrorCode::DeviceLost,
+            _ => StreamErrorCode::Unknown,
+        };
+        push_event(
+            &mut state.event_producer,
+            EngineEvent::DeviceError(DeviceErrorKind::StreamError(code)),
+        );
+    }
+
     // 2. Drain input capture ring buffer into InputNode
     if let (Some(reader), Some(input_idx)) =
         (&mut state.input_capture_reader, state.input_node_index)
@@ -128,6 +194,7 @@ pub fn audio_callback(state: &mut CallbackState, output: &mut [f32], num_frames:
     let any_solo = state
         .tracks
         .iter()
+        // ORDERING: Relaxed OK — single-value eventual consistency (UI parameter)
         .any(|t| t.solo.load(std::sync::atomic::Ordering::Relaxed));
 
     // 5. Build process context
@@ -152,11 +219,13 @@ pub fn audio_callback(state: &mut CallbackState, output: &mut [f32], num_frames:
             {
                 if track_node
                     .record_overflow
+                    // ORDERING: Relaxed OK — single-value flag, set/reset within audio thread
                     .swap(false, std::sync::atomic::Ordering::Relaxed)
                 {
-                    let _ = state
-                        .event_producer
-                        .push(EngineEvent::RecordingOverflow { track_id: track.id });
+                    push_event(
+                        &mut state.event_producer,
+                        EngineEvent::RecordingOverflow { track_id: track.id },
+                    );
                 }
             }
         }
@@ -186,7 +255,15 @@ pub fn audio_callback(state: &mut CallbackState, output: &mut [f32], num_frames:
         let budget =
             std::time::Duration::from_secs_f64(num_frames as f64 / state.sample_rate as f64);
         let cpu_load = elapsed.as_secs_f32() / budget.as_secs_f32();
-        let _ = state.event_producer.push(EngineEvent::CpuLoad(cpu_load));
+        push_event(&mut state.event_producer, EngineEvent::CpuLoad(cpu_load));
+    }
+}
+
+/// Push an event to the UI, counting drops on overflow.
+#[inline]
+pub(crate) fn push_event(producer: &mut rtrb::Producer<EngineEvent>, event: EngineEvent) {
+    if producer.push(event).is_err() {
+        DROPPED_EVENTS.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -203,10 +280,13 @@ fn send_meter_events(state: &mut CallbackState, _context: &ProcessContext) {
             .node_downcast_mut::<crate::graph::nodes::output_node::OutputNode>(output_idx)
         {
             let peaks = output_node.output_buffer().peak_levels();
-            let _ = state.event_producer.push(EngineEvent::MasterPeakMeter {
-                left: peaks[0],
-                right: if MAX_CHANNELS > 1 { peaks[1] } else { peaks[0] },
-            });
+            push_event(
+                &mut state.event_producer,
+                EngineEvent::MasterPeakMeter {
+                    left: peaks[0],
+                    right: if MAX_CHANNELS > 1 { peaks[1] } else { peaks[0] },
+                },
+            );
         }
     }
 }
