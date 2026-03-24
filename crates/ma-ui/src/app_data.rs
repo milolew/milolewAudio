@@ -12,6 +12,7 @@ use ma_audio_engine::engine::EngineConfig;
 use ma_core::commands::EngineCommand as CoreCommand;
 use ma_core::device::AudioDeviceConfig;
 
+use crate::config::{load_preferences, save_preferences, Preferences};
 use crate::engine_bridge::bridge::{create_bridge, EngineBridge};
 use crate::engine_bridge::commands::EngineCommand;
 use crate::engine_bridge::mock_engine::{spawn_mock_engine, MockEngineHandle};
@@ -44,6 +45,9 @@ pub struct AppData {
     pub clips: Vec<ClipState>,
     pub active_view: ActiveView,
     pub device_status_text: String,
+    pub device_sample_rate: String,
+    pub device_buffer_size: String,
+    pub device_latency: String,
     pub show_preferences: bool,
 
     #[lens(ignore)]
@@ -268,8 +272,11 @@ impl AppData {
             },
         ];
 
+        // Load saved preferences (or defaults)
+        let prefs = load_preferences();
+
         // Try real audio engine, fallback to mock
-        let engine = Self::try_real_engine().unwrap_or_else(|e| {
+        let engine = Self::try_real_engine(&prefs.audio).unwrap_or_else(|e| {
             log::warn!("Real audio engine unavailable: {e}. Using mock engine.");
             let (bridge, endpoint) = create_bridge();
             let handle = spawn_mock_engine(endpoint, track_ids.clone());
@@ -279,18 +286,36 @@ impl AppData {
             }
         });
 
-        let device_status_text = match &engine {
-            EngineMode::Real { device_manager, .. } => match device_manager.status() {
-                ma_core::device::DeviceStatus::Active {
-                    output_device,
-                    actual_sample_rate,
-                    actual_buffer_size,
-                    ..
-                } => format!("{output_device} ({actual_sample_rate} Hz, {actual_buffer_size} buf)"),
-                _ => "Offline".into(),
-            },
-            EngineMode::Mock { .. } => "Mock Engine (no audio device)".into(),
-        };
+        let (device_status_text, device_sample_rate, device_buffer_size, device_latency) =
+            match &engine {
+                EngineMode::Real { device_manager, .. } => match device_manager.status() {
+                    ma_core::device::DeviceStatus::Active {
+                        output_device,
+                        actual_sample_rate,
+                        actual_buffer_size,
+                        ..
+                    } => {
+                        let latency_ms =
+                            *actual_buffer_size as f64 / *actual_sample_rate as f64 * 1000.0;
+                        (
+                            output_device.clone(),
+                            format!("{actual_sample_rate} Hz"),
+                            format!("{actual_buffer_size} samples"),
+                            format!("{latency_ms:.1} ms"),
+                        )
+                    }
+                    _ => ("Offline".into(), "-".into(), "-".into(), "-".into()),
+                },
+                EngineMode::Mock { .. } => (
+                    "Mock Engine (no audio device)".into(),
+                    format!("{} Hz", prefs.audio.sample_rate),
+                    format!("{} samples", prefs.audio.buffer_size),
+                    format!(
+                        "{:.1} ms",
+                        prefs.audio.buffer_size as f64 / prefs.audio.sample_rate as f64 * 1000.0
+                    ),
+                ),
+            };
 
         Self {
             transport: TransportState::default(),
@@ -304,6 +329,9 @@ impl AppData {
             clips,
             active_view: ActiveView::Arrangement,
             device_status_text,
+            device_sample_rate,
+            device_buffer_size,
+            device_latency,
             show_preferences: false,
             engine,
         }
@@ -332,14 +360,13 @@ impl AppData {
         }
     }
 
-    /// Attempt to start real audio engine with default device.
-    fn try_real_engine() -> Result<EngineMode, String> {
+    /// Attempt to start real audio engine with the given device config.
+    fn try_real_engine(device_config: &AudioDeviceConfig) -> Result<EngineMode, String> {
         let mut device_manager = AudioDeviceManager::new();
         device_manager.enumerate_devices();
-        let device_config = AudioDeviceConfig::default();
         let engine_config = EngineConfig::default();
         let handle = device_manager
-            .apply_config(device_config, engine_config)
+            .apply_config(device_config.clone(), engine_config)
             .map_err(|e| e.to_string())?;
         let bridge = RealEngineBridge::new(handle);
         Ok(EngineMode::Real {
@@ -588,17 +615,38 @@ impl Model for AppData {
             AppEvent::RefreshDevices => {
                 if let EngineMode::Real { device_manager, .. } = &mut self.engine {
                     device_manager.enumerate_devices();
-                    self.device_status_text = match device_manager.status() {
+                    match device_manager.status() {
                         ma_core::device::DeviceStatus::Active {
                             output_device,
                             actual_sample_rate,
                             actual_buffer_size,
                             ..
-                        } => format!(
-                            "{output_device} ({actual_sample_rate} Hz, {actual_buffer_size} buf)"
-                        ),
-                        _ => "Offline".into(),
-                    };
+                        } => {
+                            let latency_ms =
+                                *actual_buffer_size as f64 / *actual_sample_rate as f64 * 1000.0;
+                            self.device_status_text = output_device.clone();
+                            self.device_sample_rate = format!("{actual_sample_rate} Hz");
+                            self.device_buffer_size = format!("{actual_buffer_size} samples");
+                            self.device_latency = format!("{latency_ms:.1} ms");
+
+                            // Persist current device config
+                            let prefs = Preferences {
+                                audio: AudioDeviceConfig {
+                                    output_device_name: Some(output_device.clone()),
+                                    sample_rate: *actual_sample_rate,
+                                    buffer_size: *actual_buffer_size,
+                                    ..AudioDeviceConfig::default()
+                                },
+                            };
+                            save_preferences(&prefs);
+                        }
+                        _ => {
+                            self.device_status_text = "Offline".into();
+                            self.device_sample_rate = "-".into();
+                            self.device_buffer_size = "-".into();
+                            self.device_latency = "-".into();
+                        }
+                    }
                 }
             }
 

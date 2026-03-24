@@ -23,21 +23,23 @@ impl PreferencesView {
                 // Sample rate
                 HStack::new(cx, |cx| {
                     Label::new(cx, "Sample Rate:").class("prefs-label");
-                    Label::new(cx, "48000 Hz").class("prefs-value");
+                    Label::new(cx, AppData::device_sample_rate.map(|s| s.clone()))
+                        .class("prefs-value");
                 })
                 .class("prefs-row");
 
                 // Buffer size
                 HStack::new(cx, |cx| {
                     Label::new(cx, "Buffer Size:").class("prefs-label");
-                    Label::new(cx, "256 samples").class("prefs-value");
+                    Label::new(cx, AppData::device_buffer_size.map(|s| s.clone()))
+                        .class("prefs-value");
                 })
                 .class("prefs-row");
 
                 // Latency
                 HStack::new(cx, |cx| {
                     Label::new(cx, "Latency:").class("prefs-label");
-                    Label::new(cx, "~5.3 ms").class("prefs-value");
+                    Label::new(cx, AppData::device_latency.map(|s| s.clone())).class("prefs-value");
                 })
                 .class("prefs-row");
 
