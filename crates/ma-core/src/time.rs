@@ -27,29 +27,54 @@ pub const PPQN: Tick = 960;
 
 /// Convert a tick position to a sample position given tempo and sample rate.
 ///
+/// Returns `None` when `tempo_bpm <= 0.0` or `sample_rate <= 0.0`.
+///
 /// Formula: samples = ticks * 60.0 * sample_rate / (tempo_bpm * PPQN)
 ///
 /// # Arguments
 /// * `tick` - Position in musical ticks
-/// * `tempo_bpm` - Tempo in beats per minute
-/// * `sample_rate` - Audio sample rate (e.g., 48000.0)
-pub fn ticks_to_samples(tick: Tick, tempo_bpm: f64, sample_rate: f64) -> SamplePos {
+/// * `tempo_bpm` - Tempo in beats per minute (must be > 0.0)
+/// * `sample_rate` - Audio sample rate in Hz (must be > 0.0)
+pub fn ticks_to_samples(tick: Tick, tempo_bpm: f64, sample_rate: f64) -> Option<SamplePos> {
     if tempo_bpm <= 0.0 || sample_rate <= 0.0 {
-        return 0;
+        return None;
     }
     let seconds_per_tick = 60.0 / (tempo_bpm * PPQN as f64);
-    (tick as f64 * seconds_per_tick * sample_rate) as SamplePos
+    Some((tick as f64 * seconds_per_tick * sample_rate) as SamplePos)
 }
 
 /// Convert a sample position to ticks given tempo and sample rate.
 ///
+/// Returns `None` when `tempo_bpm <= 0.0` or `sample_rate <= 0.0`.
+///
 /// Formula: ticks = samples * tempo_bpm * PPQN / (60.0 * sample_rate)
-pub fn samples_to_ticks(sample: SamplePos, tempo_bpm: f64, sample_rate: f64) -> Tick {
+///
+/// # Arguments
+/// * `sample` - Position in samples
+/// * `tempo_bpm` - Tempo in beats per minute (must be > 0.0)
+/// * `sample_rate` - Audio sample rate in Hz (must be > 0.0)
+pub fn samples_to_ticks(sample: SamplePos, tempo_bpm: f64, sample_rate: f64) -> Option<Tick> {
     if tempo_bpm <= 0.0 || sample_rate <= 0.0 {
-        return 0;
+        return None;
     }
     let ticks_per_sample = (tempo_bpm * PPQN as f64) / (60.0 * sample_rate);
-    (sample as f64 * ticks_per_sample) as Tick
+    Some((sample as f64 * ticks_per_sample) as Tick)
+}
+
+/// Convert ticks to samples, returning 0 on invalid input.
+///
+/// This is a backwards-compatible wrapper around [`ticks_to_samples`].
+#[deprecated(since = "0.2.0", note = "Use ticks_to_samples() which returns Option<SamplePos>")]
+pub fn ticks_to_samples_or_zero(tick: Tick, tempo_bpm: f64, sample_rate: f64) -> SamplePos {
+    ticks_to_samples(tick, tempo_bpm, sample_rate).unwrap_or(0)
+}
+
+/// Convert samples to ticks, returning 0 on invalid input.
+///
+/// This is a backwards-compatible wrapper around [`samples_to_ticks`].
+#[deprecated(since = "0.2.0", note = "Use samples_to_ticks() which returns Option<Tick>")]
+pub fn samples_to_ticks_or_zero(sample: SamplePos, tempo_bpm: f64, sample_rate: f64) -> Tick {
+    samples_to_ticks(sample, tempo_bpm, sample_rate).unwrap_or(0)
 }
 
 /// Display-friendly representation of a musical position: Bars:Beats:Ticks.
@@ -97,21 +122,21 @@ mod tests {
         // 1 quarter note = 0.5 seconds = 24000 samples
         // 1 quarter note = 960 ticks
         // So 960 ticks = 24000 samples
-        let samples = ticks_to_samples(960, 120.0, 48000.0);
+        let samples = ticks_to_samples(960, 120.0, 48000.0).unwrap();
         assert_eq!(samples, 24000);
     }
 
     #[test]
     fn sample_to_tick_conversion_at_120bpm() {
-        let ticks = samples_to_ticks(24000, 120.0, 48000.0);
+        let ticks = samples_to_ticks(24000, 120.0, 48000.0).unwrap();
         assert_eq!(ticks, 960);
     }
 
     #[test]
     fn round_trip_conversion() {
         let original_tick: Tick = 1920; // 2 quarter notes
-        let samples = ticks_to_samples(original_tick, 140.0, 44100.0);
-        let back = samples_to_ticks(samples, 140.0, 44100.0);
+        let samples = ticks_to_samples(original_tick, 140.0, 44100.0).unwrap();
+        let back = samples_to_ticks(samples, 140.0, 44100.0).unwrap();
         assert!(
             (back - original_tick).abs() <= 1,
             "Round trip drift > 1 tick"
@@ -155,21 +180,21 @@ mod tests {
     }
 
     #[test]
-    fn zero_tempo_returns_zero() {
-        assert_eq!(ticks_to_samples(960, 0.0, 48000.0), 0);
-        assert_eq!(samples_to_ticks(24000, 0.0, 48000.0), 0);
+    fn zero_tempo_returns_none() {
+        assert_eq!(ticks_to_samples(960, 0.0, 48000.0), None);
+        assert_eq!(samples_to_ticks(24000, 0.0, 48000.0), None);
     }
 
     #[test]
-    fn zero_sample_rate_returns_zero() {
-        assert_eq!(ticks_to_samples(960, 120.0, 0.0), 0);
-        assert_eq!(samples_to_ticks(24000, 120.0, 0.0), 0);
+    fn zero_sample_rate_returns_none() {
+        assert_eq!(ticks_to_samples(960, 120.0, 0.0), None);
+        assert_eq!(samples_to_ticks(24000, 120.0, 0.0), None);
     }
 
     #[test]
-    fn negative_tempo_returns_zero() {
-        assert_eq!(ticks_to_samples(960, -120.0, 48000.0), 0);
-        assert_eq!(samples_to_ticks(24000, -120.0, 48000.0), 0);
+    fn negative_tempo_returns_none() {
+        assert_eq!(ticks_to_samples(960, -120.0, 48000.0), None);
+        assert_eq!(samples_to_ticks(24000, -120.0, 48000.0), None);
     }
 
     #[test]
