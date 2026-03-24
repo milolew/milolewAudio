@@ -283,4 +283,196 @@ mod tests {
             }
         );
     }
+
+    // ── C6: Edge-case tests for time ────────────────────────────────
+
+    #[test]
+    fn negative_ticks_clamped_to_zero_in_bbt() {
+        // Negative ticks should be clamped to 0, yielding bar 1, beat 1, tick 0.
+        let bbt = BarBeatTick::from_ticks(-100, 4, 4).unwrap();
+        assert_eq!(
+            bbt,
+            BarBeatTick {
+                bar: 1,
+                beat: 1,
+                tick: 0
+            }
+        );
+    }
+
+    #[test]
+    fn negative_ticks_large_value_clamped() {
+        let bbt = BarBeatTick::from_ticks(i64::MIN, 4, 4).unwrap();
+        assert_eq!(
+            bbt,
+            BarBeatTick {
+                bar: 1,
+                beat: 1,
+                tick: 0
+            }
+        );
+    }
+
+    #[test]
+    fn ticks_to_samples_negative_tick() {
+        // Negative ticks should produce a negative sample position.
+        let result = ticks_to_samples(-960, 120.0, 48000.0).unwrap();
+        assert_eq!(result, -24000);
+    }
+
+    #[test]
+    fn ticks_to_samples_zero_tick() {
+        let result = ticks_to_samples(0, 120.0, 48000.0).unwrap();
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn samples_to_ticks_zero_sample() {
+        let result = samples_to_ticks(0, 120.0, 48000.0).unwrap();
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn samples_to_ticks_negative_sample() {
+        let result = samples_to_ticks(-24000, 120.0, 48000.0).unwrap();
+        assert_eq!(result, -960);
+    }
+
+    #[test]
+    fn ticks_to_samples_very_fast_tempo() {
+        // At 300 BPM: 1 quarter note = 60/300 = 0.2 seconds = 9600 samples at 48kHz
+        let result = ticks_to_samples(960, 300.0, 48000.0).unwrap();
+        assert_eq!(result, 9600);
+    }
+
+    #[test]
+    fn ticks_to_samples_very_slow_tempo() {
+        // At 20 BPM: 1 quarter note = 60/20 = 3.0 seconds = 144000 samples at 48kHz
+        let result = ticks_to_samples(960, 20.0, 48000.0).unwrap();
+        assert_eq!(result, 144000);
+    }
+
+    #[test]
+    fn ticks_to_samples_high_sample_rate() {
+        // At 120 BPM, 96kHz: 960 ticks = 0.5 seconds = 48000 samples
+        let result = ticks_to_samples(960, 120.0, 96000.0).unwrap();
+        assert_eq!(result, 48000);
+    }
+
+    #[test]
+    fn round_trip_accuracy_at_various_tempos() {
+        let tempos = [60.0, 90.0, 120.0, 140.0, 160.0, 200.0, 300.0];
+        let rates = [44100.0, 48000.0, 96000.0];
+        let tick_values = [0i64, 1, 480, 960, 1920, 3840, 100_000];
+
+        for &tempo in &tempos {
+            for &rate in &rates {
+                for &tick in &tick_values {
+                    let samples = ticks_to_samples(tick, tempo, rate).unwrap();
+                    let back = samples_to_ticks(samples, tempo, rate).unwrap();
+                    assert!(
+                        (back - tick).abs() <= 1,
+                        "Round trip drift > 1 at tempo={}, rate={}, tick={}: got {}",
+                        tempo,
+                        rate,
+                        tick,
+                        back
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn large_tick_value() {
+        // Very large tick value (roughly 1 million quarter notes).
+        let large_tick: Tick = 960_000_000;
+        let result = ticks_to_samples(large_tick, 120.0, 48000.0);
+        assert!(result.is_some());
+        let samples = result.unwrap();
+        // 960_000_000 ticks / 960 = 1_000_000 quarter notes
+        // At 120 BPM = 500_000 minutes = 30_000_000 seconds
+        // At 48kHz = 1_440_000_000_000 samples
+        assert!(samples > 0);
+    }
+
+    #[test]
+    fn very_large_tick_in_bbt() {
+        // Test with a large tick value (many bars).
+        let large_tick: Tick = 3840 * 1000; // 1000 bars in 4/4
+        let bbt = BarBeatTick::from_ticks(large_tick, 4, 4).unwrap();
+        assert_eq!(bbt.bar, 1001); // 1-indexed
+        assert_eq!(bbt.beat, 1);
+        assert_eq!(bbt.tick, 0);
+    }
+
+    #[test]
+    fn bbt_with_sub_ticks() {
+        // Tick 500 in 4/4: should be bar 1, beat 1, tick 500.
+        let bbt = BarBeatTick::from_ticks(500, 4, 4).unwrap();
+        assert_eq!(bbt.bar, 1);
+        assert_eq!(bbt.beat, 1);
+        assert_eq!(bbt.tick, 500);
+    }
+
+    #[test]
+    fn bbt_6_8_time() {
+        // 6/8 time: 6 beats of eighth notes.
+        // Ticks per beat (eighth note) = 960 * 4 / 8 = 480.
+        // Ticks per bar = 480 * 6 = 2880.
+        let bbt = BarBeatTick::from_ticks(2880, 6, 8).unwrap();
+        assert_eq!(bbt.bar, 2);
+        assert_eq!(bbt.beat, 1);
+        assert_eq!(bbt.tick, 0);
+    }
+
+    #[test]
+    fn bbt_7_8_time() {
+        // 7/8 time: 7 beats of eighth notes.
+        // Ticks per beat = 480.
+        // Ticks per bar = 480 * 7 = 3360.
+        let bbt = BarBeatTick::from_ticks(3360, 7, 8).unwrap();
+        assert_eq!(bbt.bar, 2);
+        assert_eq!(bbt.beat, 1);
+        assert_eq!(bbt.tick, 0);
+    }
+
+    #[test]
+    fn bbt_serialization_round_trip() {
+        let bbt = BarBeatTick {
+            bar: 42,
+            beat: 3,
+            tick: 480,
+        };
+        let json = serde_json::to_string(&bbt).unwrap();
+        let deserialized: BarBeatTick = serde_json::from_str(&json).unwrap();
+        assert_eq!(bbt, deserialized);
+    }
+
+    #[test]
+    fn time_error_display() {
+        let err = TimeError::InvalidTimeSignature {
+            numerator: 0,
+            denominator: 4,
+        };
+        assert_eq!(
+            err.to_string(),
+            "invalid time signature 0/4: neither may be zero"
+        );
+    }
+
+    #[test]
+    fn negative_sample_rate_returns_none() {
+        assert_eq!(ticks_to_samples(960, 120.0, -48000.0), None);
+        assert_eq!(samples_to_ticks(24000, 120.0, -48000.0), None);
+    }
+
+    #[test]
+    fn very_small_positive_tempo() {
+        // Very small but positive tempo should still work.
+        let result = ticks_to_samples(960, 0.001, 48000.0);
+        assert!(result.is_some());
+        let samples = result.unwrap();
+        assert!(samples > 0);
+    }
 }
