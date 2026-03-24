@@ -29,10 +29,7 @@ impl TransportBar {
                 Button::new(cx, |cx| Label::new(cx, "\u{23FA}"))
                     .on_press(|cx| cx.emit(AppEvent::Record))
                     .class("transport-btn")
-                    .toggle_class(
-                        "recording",
-                        AppData::transport.map(|t| t.is_recording),
-                    );
+                    .toggle_class("recording", AppData::transport.map(|t| t.is_recording));
 
                 Element::new(cx).class("separator");
 
@@ -50,11 +47,8 @@ impl TransportBar {
 
                 // BPM display
                 Label::new(cx, "BPM").class("bpm-label");
-                Label::new(
-                    cx,
-                    AppData::transport.map(|t| format!("{:.1}", t.tempo)),
-                )
-                .class("tempo-display");
+                Label::new(cx, AppData::transport.map(|t| format!("{:.1}", t.tempo)))
+                    .class("tempo-display");
 
                 Element::new(cx).class("separator");
 
@@ -76,10 +70,7 @@ impl TransportBar {
                 Button::new(cx, |cx| Label::new(cx, "Loop"))
                     .on_press(|cx| cx.emit(AppEvent::ToggleLoop))
                     .class("transport-btn")
-                    .toggle_class(
-                        "active",
-                        AppData::transport.map(|t| t.loop_enabled),
-                    );
+                    .toggle_class("active", AppData::transport.map(|t| t.loop_enabled));
 
                 Element::new(cx).class("separator");
 

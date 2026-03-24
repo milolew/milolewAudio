@@ -28,12 +28,10 @@ pub fn config_path() -> PathBuf {
 pub fn load_preferences() -> Preferences {
     let path = config_path();
     match std::fs::read_to_string(&path) {
-        Ok(contents) => {
-            serde_json::from_str(&contents).unwrap_or_else(|e| {
-                log::warn!("Invalid preferences file: {e}. Using defaults.");
-                Preferences::default()
-            })
-        }
+        Ok(contents) => serde_json::from_str(&contents).unwrap_or_else(|e| {
+            log::warn!("Invalid preferences file: {e}. Using defaults.");
+            Preferences::default()
+        }),
         Err(_) => Preferences::default(),
     }
 }

@@ -127,7 +127,12 @@ impl View for TrackHeader {
         // -- Background --
         let bg_alpha = if is_selected { 50 } else { 30 };
         let mut bg_paint = vg::Paint::default();
-        bg_paint.set_color(vg::Color::from_argb(255, 38 + bg_alpha, 38 + bg_alpha, 42 + bg_alpha));
+        bg_paint.set_color(vg::Color::from_argb(
+            255,
+            38 + bg_alpha,
+            38 + bg_alpha,
+            42 + bg_alpha,
+        ));
         bg_paint.set_style(vg::PaintStyle::Fill);
         bg_paint.set_anti_alias(true);
         canvas.draw_rect(
@@ -209,8 +214,8 @@ impl View for TrackHeader {
     }
 
     fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
-        event.map(|window_event, meta| match window_event {
-            WindowEvent::MouseDown(MouseButton::Left) => {
+        event.map(|window_event, meta| {
+            if let WindowEvent::MouseDown(MouseButton::Left) = window_event {
                 if let Some(app) = cx.data::<AppData>() {
                     if let Some(track) = app.tracks.get(self.track_index) {
                         cx.emit(AppEvent::SelectTrack(track.id));
@@ -218,7 +223,6 @@ impl View for TrackHeader {
                 }
                 meta.consume();
             }
-            _ => {}
         });
     }
 }
@@ -238,7 +242,12 @@ impl TrackLane {
     }
 
     /// Hit-test: find which clip (if any) is under the given pixel coordinate.
-    fn clip_at_position(app: &AppData, track_index: usize, x: f32, bounds_x: f32) -> Option<ClipId> {
+    fn clip_at_position(
+        app: &AppData,
+        track_index: usize,
+        x: f32,
+        bounds_x: f32,
+    ) -> Option<ClipId> {
         let track = app.tracks.get(track_index)?;
         let arrangement = &app.arrangement;
 
@@ -283,12 +292,12 @@ impl View for TrackLane {
         let is_selected = arrangement.selected_track == Some(track.id);
 
         // -- Background (alternating row shading) --
-        let base_lum: u8 = if self.track_index % 2 == 0 { 30 } else { 34 };
-        let bg_lum = if is_selected {
-            base_lum + 8
+        let base_lum: u8 = if self.track_index.is_multiple_of(2) {
+            30
         } else {
-            base_lum
+            34
         };
+        let bg_lum = if is_selected { base_lum + 8 } else { base_lum };
 
         let mut bg_paint = vg::Paint::default();
         bg_paint.set_color(vg::Color::from_argb(255, bg_lum, bg_lum, bg_lum + 2));
@@ -337,11 +346,7 @@ impl View for TrackLane {
             let x = bounds.x + ((bar_tick as f64 - scroll_x) * zoom_x) as f32;
 
             if x >= bounds.x - 1.0 && x <= bounds.x + bounds.w + 1.0 {
-                canvas.draw_line(
-                    (x, bounds.y),
-                    (x, bounds.y + bounds.h),
-                    &bar_line_paint,
-                );
+                canvas.draw_line((x, bounds.y), (x, bounds.y + bounds.h), &bar_line_paint);
             }
 
             if show_beats {
@@ -365,8 +370,7 @@ impl View for TrackLane {
         if transport.loop_enabled {
             let loop_x_start =
                 bounds.x + ((transport.loop_start as f64 - scroll_x) * zoom_x) as f32;
-            let loop_x_end =
-                bounds.x + ((transport.loop_end as f64 - scroll_x) * zoom_x) as f32;
+            let loop_x_end = bounds.x + ((transport.loop_end as f64 - scroll_x) * zoom_x) as f32;
 
             let lx = loop_x_start.max(bounds.x);
             let rx = loop_x_end.min(bounds.x + bounds.w);
@@ -389,8 +393,7 @@ impl View for TrackLane {
         let clip_font = vg::Font::default();
 
         for clip in app.clips.iter().filter(|c| c.track_id == track.id) {
-            let clip_x =
-                bounds.x + ((clip.start_tick as f64 - scroll_x) * zoom_x) as f32;
+            let clip_x = bounds.x + ((clip.start_tick as f64 - scroll_x) * zoom_x) as f32;
             let clip_w = (clip.duration_ticks as f64 * zoom_x) as f32;
             let clip_end_x = clip_x + clip_w;
 
@@ -443,8 +446,7 @@ impl View for TrackLane {
                 header_paint.set_style(vg::PaintStyle::Fill);
                 header_paint.set_anti_alias(true);
 
-                let header_rect =
-                    vg::Rect::from_xywh(draw_x, clip_y, draw_w, header_h);
+                let header_rect = vg::Rect::from_xywh(draw_x, clip_y, draw_w, header_h);
                 // Use a clipped rounded rect for the header portion
                 canvas.save();
                 canvas.clip_rect(header_rect, None, Some(true));
@@ -495,15 +497,12 @@ impl View for TrackLane {
                 );
 
                 for note in &clip.notes {
-                    let note_x = bounds.x
-                        + ((note.start_tick as f64 - scroll_x) * zoom_x) as f32;
-                    let note_w =
-                        (note.duration_ticks as f64 * zoom_x) as f32;
+                    let note_x = bounds.x + ((note.start_tick as f64 - scroll_x) * zoom_x) as f32;
+                    let note_w = (note.duration_ticks as f64 * zoom_x) as f32;
 
                     // Y position: higher pitches at top
                     let pitch_offset = (max_pitch - note.pitch) as f32 + 1.0;
-                    let note_y =
-                        note_area_y + (pitch_offset / pitch_range) * note_area_h;
+                    let note_y = note_area_y + (pitch_offset / pitch_range) * note_area_h;
                     let note_h = (note_area_h / pitch_range).max(1.0).min(4.0 * scale);
 
                     if note_x + note_w >= draw_x && note_x <= draw_end_x {
@@ -524,8 +523,7 @@ impl View for TrackLane {
         }
 
         // -- Playhead --
-        let playhead_x =
-            bounds.x + ((transport.position as f64 - scroll_x) * zoom_x) as f32;
+        let playhead_x = bounds.x + ((transport.position as f64 - scroll_x) * zoom_x) as f32;
 
         if playhead_x >= bounds.x && playhead_x <= bounds.x + bounds.w {
             let mut playhead_paint = vg::Paint::default();

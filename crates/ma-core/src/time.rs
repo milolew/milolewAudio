@@ -104,28 +104,59 @@ mod tests {
         let original_tick: Tick = 1920; // 2 quarter notes
         let samples = ticks_to_samples(original_tick, 140.0, 44100.0);
         let back = samples_to_ticks(samples, 140.0, 44100.0);
-        assert!((back - original_tick).abs() <= 1, "Round trip drift > 1 tick");
+        assert!(
+            (back - original_tick).abs() <= 1,
+            "Round trip drift > 1 tick"
+        );
     }
 
     #[test]
     fn bar_beat_tick_4_4_time() {
         // Tick 0 = Bar 1, Beat 1, Tick 0
         let bbt = BarBeatTick::from_ticks(0, 4, 4);
-        assert_eq!(bbt, BarBeatTick { bar: 1, beat: 1, tick: 0 });
+        assert_eq!(
+            bbt,
+            BarBeatTick {
+                bar: 1,
+                beat: 1,
+                tick: 0
+            }
+        );
 
         // Tick 960 = Bar 1, Beat 2, Tick 0
         let bbt = BarBeatTick::from_ticks(960, 4, 4);
-        assert_eq!(bbt, BarBeatTick { bar: 1, beat: 2, tick: 0 });
+        assert_eq!(
+            bbt,
+            BarBeatTick {
+                bar: 1,
+                beat: 2,
+                tick: 0
+            }
+        );
 
         // Tick 3840 = Bar 2, Beat 1, Tick 0 (4 beats × 960 = 3840)
         let bbt = BarBeatTick::from_ticks(3840, 4, 4);
-        assert_eq!(bbt, BarBeatTick { bar: 2, beat: 1, tick: 0 });
+        assert_eq!(
+            bbt,
+            BarBeatTick {
+                bar: 2,
+                beat: 1,
+                tick: 0
+            }
+        );
     }
 
     #[test]
     fn bar_beat_tick_3_4_time() {
         // In 3/4: bar = 3 beats × 960 ticks = 2880 ticks
         let bbt = BarBeatTick::from_ticks(2880, 3, 4);
-        assert_eq!(bbt, BarBeatTick { bar: 2, beat: 1, tick: 0 });
+        assert_eq!(
+            bbt,
+            BarBeatTick {
+                bar: 2,
+                beat: 1,
+                tick: 0
+            }
+        );
     }
 }

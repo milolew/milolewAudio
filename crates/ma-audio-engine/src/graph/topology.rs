@@ -59,11 +59,7 @@ impl AudioGraph {
     /// * `nodes` - All audio nodes in the graph
     /// * `edges` - All connections between nodes
     /// * `buffer_size` - Maximum frames per callback (for buffer pre-allocation)
-    pub fn new(
-        nodes: Vec<Box<dyn AudioNode>>,
-        edges: Vec<Edge>,
-        buffer_size: u32,
-    ) -> Self {
+    pub fn new(nodes: Vec<Box<dyn AudioNode>>, edges: Vec<Edge>, buffer_size: u32) -> Self {
         let node_count = nodes.len();
 
         // Build node_id -> index mapping
@@ -142,7 +138,8 @@ impl AudioGraph {
             // Gather input pointers — clear() reuses existing capacity, no allocation.
             self.process_input_ptrs.clear();
             for &idx in input_indices {
-                self.process_input_ptrs.push(unsafe { buf_ptr.add(idx) as *const AudioBuffer });
+                self.process_input_ptrs
+                    .push(unsafe { buf_ptr.add(idx) as *const AudioBuffer });
             }
 
             // Gather output pointers — clear() reuses existing capacity, no allocation.
@@ -239,7 +236,10 @@ fn topological_sort(
     let mut adjacency: Vec<Vec<NodeIndex>> = vec![Vec::new(); n];
 
     let find_idx = |id: NodeId| -> Option<NodeIndex> {
-        node_indices.iter().find(|(nid, _)| *nid == id).map(|(_, i)| *i)
+        node_indices
+            .iter()
+            .find(|(nid, _)| *nid == id)
+            .map(|(_, i)| *i)
     };
 
     for edge in edges {
@@ -317,15 +317,18 @@ mod tests {
         let schedule = graph.schedule();
         assert_eq!(schedule.len(), 3);
 
-        let input_pos = schedule.iter().position(|&i| {
-            graph.nodes[i].node_id() == input_id
-        }).unwrap();
-        let mixer_pos = schedule.iter().position(|&i| {
-            graph.nodes[i].node_id() == mixer_id
-        }).unwrap();
-        let output_pos = schedule.iter().position(|&i| {
-            graph.nodes[i].node_id() == output_id
-        }).unwrap();
+        let input_pos = schedule
+            .iter()
+            .position(|&i| graph.nodes[i].node_id() == input_id)
+            .unwrap();
+        let mixer_pos = schedule
+            .iter()
+            .position(|&i| graph.nodes[i].node_id() == mixer_id)
+            .unwrap();
+        let output_pos = schedule
+            .iter()
+            .position(|&i| graph.nodes[i].node_id() == output_id)
+            .unwrap();
 
         assert!(input_pos < mixer_pos, "Input must process before mixer");
         assert!(mixer_pos < output_pos, "Mixer must process before output");

@@ -107,8 +107,7 @@ impl InputCaptureReader {
                 let second_len = second.len();
                 self.staging_buffer[..first_len].copy_from_slice(first);
                 if second_len > 0 {
-                    self.staging_buffer[first_len..first_len + second_len]
-                        .copy_from_slice(second);
+                    self.staging_buffer[first_len..first_len + second_len].copy_from_slice(second);
                 }
                 let total = first_len + second_len;
                 chunk.commit_all();

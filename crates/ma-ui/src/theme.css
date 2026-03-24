@@ -1,15 +1,1084 @@
-/* milolew Audio — Dark DAW Theme */
+/* ============================================================
+   milolew Audio — Dark Professional DAW Theme
+   ============================================================
+   Color Palette:
+     Background primary:   #1E1E1E
+     Background surface:   #2D2D2D
+     Background elevated:  #3D3D3D
+     Border:               #404040
+     Text primary:         #E0E0E0
+     Text secondary:       #A0A0A0
+     Text dim:             #707070
+     Accent blue:          #5B9BD5
+     Accent green:         #4CAF50
+     Playhead red:         #FF4444
+     Recording red:        #FF3333
+     Mute orange:          #FF9800
+     Solo yellow:          #FFC107
+   ============================================================ */
+
+
+/* ------------------------------------------------------------
+   Global defaults
+   ------------------------------------------------------------ */
 
 * {
     font-size: 12;
-    color: #e0e0e0;
+    color: #E0E0E0;
+    background-color: transparent;
 }
 
 :root {
-    background-color: #1e1e1e;
+    background-color: #1E1E1E;
     layout-type: column;
 }
 
 label {
     background-color: transparent;
+}
+
+
+/* ------------------------------------------------------------
+   Root view — main application container
+   ------------------------------------------------------------ */
+
+root-view {
+    width: 1s;
+    height: 1s;
+    layout-type: column;
+    background-color: #1E1E1E;
+}
+
+
+/* ============================================================
+   TRANSPORT BAR
+   ============================================================ */
+
+transport-bar {
+    width: 1s;
+    height: 40px;
+    min-height: 40px;
+    max-height: 40px;
+    background-color: #252525;
+    border-width: 0px 0px 1px 0px;
+    border-color: #404040;
+    layout-type: row;
+}
+
+.transport-inner {
+    width: 1s;
+    height: 1s;
+    layout-type: row;
+    child-space: 4px;
+    col-between: 4px;
+    child-top: 1s;
+    child-bottom: 1s;
+}
+
+
+/* -- Transport buttons (stop, play, record, loop) -- */
+
+.transport-btn {
+    width: 36px;
+    height: 28px;
+    min-width: 36px;
+    background-color: #3D3D3D;
+    border-width: 1px;
+    border-color: #505050;
+    border-radius: 3px;
+    font-size: 14;
+    child-space: auto;
+    transition: background-color 100ms;
+}
+
+.transport-btn:hover {
+    background-color: #4A4A4A;
+    border-color: #606060;
+}
+
+.transport-btn:active {
+    background-color: #353535;
+}
+
+.transport-btn.playing {
+    background-color: #2E5A2E;
+    border-color: #4CAF50;
+    color: #4CAF50;
+}
+
+.transport-btn.playing:hover {
+    background-color: #3A6E3A;
+}
+
+.transport-btn.recording {
+    background-color: #5A2020;
+    border-color: #FF3333;
+    color: #FF3333;
+}
+
+.transport-btn.recording:hover {
+    background-color: #6E2A2A;
+}
+
+.transport-btn.active {
+    background-color: #2A3D5A;
+    border-color: #5B9BD5;
+    color: #5B9BD5;
+}
+
+.transport-btn.active:hover {
+    background-color: #354D6E;
+}
+
+.transport-btn:disabled {
+    opacity: 0.35;
+}
+
+
+/* -- Separator (vertical divider in transport bar) -- */
+
+.separator {
+    width: 1px;
+    height: 20px;
+    background-color: #404040;
+    child-top: 1s;
+    child-bottom: 1s;
+}
+
+
+/* -- Position display (BBT readout) -- */
+
+.position-display {
+    min-width: 90px;
+    height: 24px;
+    background-color: #181818;
+    border-width: 1px;
+    border-color: #353535;
+    border-radius: 2px;
+    font-size: 14;
+    font-weight: bold;
+    color: #5B9BD5;
+    child-space: auto;
+    child-left: 8px;
+    child-right: 8px;
+}
+
+
+/* -- BPM label and tempo display -- */
+
+.bpm-label {
+    font-size: 10;
+    color: #707070;
+    child-space: auto;
+}
+
+.tempo-display {
+    min-width: 48px;
+    height: 24px;
+    background-color: #181818;
+    border-width: 1px;
+    border-color: #353535;
+    border-radius: 2px;
+    font-size: 13;
+    font-weight: bold;
+    color: #E0E0E0;
+    child-space: auto;
+    child-left: 6px;
+    child-right: 6px;
+}
+
+
+/* -- Time signature display -- */
+
+.time-sig {
+    min-width: 36px;
+    height: 24px;
+    background-color: #181818;
+    border-width: 1px;
+    border-color: #353535;
+    border-radius: 2px;
+    font-size: 12;
+    color: #A0A0A0;
+    child-space: auto;
+    child-left: 6px;
+    child-right: 6px;
+}
+
+
+/* -- CPU display -- */
+
+.cpu-display {
+    min-width: 72px;
+    height: 24px;
+    font-size: 10;
+    color: #707070;
+    child-space: auto;
+    child-left: 8px;
+    child-right: 8px;
+}
+
+
+/* ============================================================
+   TAB BAR — view switching
+   ============================================================ */
+
+.tab-bar {
+    width: 1s;
+    height: 28px;
+    min-height: 28px;
+    max-height: 28px;
+    layout-type: row;
+    background-color: #222222;
+    border-width: 0px 0px 1px 0px;
+    border-color: #383838;
+    child-space: 0px;
+    col-between: 0px;
+    child-top: 1s;
+    child-bottom: 1s;
+    child-left: 4px;
+}
+
+.view-tab {
+    height: 28px;
+    min-width: 80px;
+    background-color: transparent;
+    border-width: 0px;
+    border-radius: 0px;
+    font-size: 11;
+    color: #808080;
+    child-space: auto;
+    child-left: 12px;
+    child-right: 12px;
+    transition: background-color 100ms;
+}
+
+.view-tab:hover {
+    background-color: #2D2D2D;
+    color: #B0B0B0;
+}
+
+.view-tab:active {
+    background-color: #333333;
+}
+
+.view-tab.active {
+    background-color: #2D2D2D;
+    color: #E0E0E0;
+    font-weight: bold;
+    border-width: 0px 0px 2px 0px;
+    border-color: #5B9BD5;
+}
+
+.editing-label {
+    font-size: 11;
+    color: #5B9BD5;
+    child-space: auto;
+    child-left: 12px;
+    opacity: 0.85;
+}
+
+
+/* ============================================================
+   ARRANGEMENT VIEW
+   ============================================================ */
+
+arrangement-view {
+    width: 1s;
+    height: 1s;
+    layout-type: row;
+    background-color: #1E1E1E;
+    overflow: hidden;
+}
+
+
+/* -- Track headers (left column) -- */
+
+.track-headers {
+    width: 180px;
+    min-width: 180px;
+    max-width: 180px;
+    height: 1s;
+    layout-type: column;
+    background-color: #252525;
+    border-width: 0px 1px 0px 0px;
+    border-color: #383838;
+    overflow: hidden;
+}
+
+.track-header {
+    width: 1s;
+    height: 80px;
+    min-height: 80px;
+    max-height: 80px;
+    layout-type: row;
+    background-color: #252525;
+    border-width: 0px 0px 1px 0px;
+    border-color: #333333;
+    child-space: 4px;
+    child-left: 4px;
+    transition: background-color 100ms;
+}
+
+.track-header:hover {
+    background-color: #2A2A2A;
+}
+
+.track-header.selected {
+    background-color: #2D3540;
+    border-color: #3D5060;
+}
+
+.track-name {
+    font-size: 11;
+    color: #D0D0D0;
+    child-top: 1s;
+    child-bottom: 1s;
+    child-left: 4px;
+}
+
+
+/* -- Track lanes (right area, canvas-drawn) -- */
+
+.track-lane {
+    width: 1s;
+    height: 80px;
+    min-height: 80px;
+    max-height: 80px;
+    background-color: #1E1E1E;
+    border-width: 0px 0px 1px 0px;
+    border-color: #2A2A2A;
+}
+
+
+/* -- Placeholder text for not-yet-built views -- */
+
+.placeholder {
+    font-size: 14;
+    color: #505050;
+    child-space: auto;
+    width: 1s;
+    height: 1s;
+}
+
+
+/* ============================================================
+   TIMELINE RULER
+   ============================================================ */
+
+timeline-ruler {
+    width: 1s;
+    height: 24px;
+    min-height: 24px;
+    max-height: 24px;
+    background-color: #2D2D2D;
+    border-width: 0px 0px 1px 0px;
+    border-color: #3C3C3C;
+}
+
+
+/* ============================================================
+   MIXER VIEW
+   ============================================================ */
+
+mixer-view {
+    width: 1s;
+    height: 1s;
+    layout-type: column;
+    background-color: #1E1E1E;
+    overflow: hidden;
+}
+
+.mixer-scroll {
+    width: 1s;
+    height: 1s;
+    overflow: hidden;
+}
+
+.mixer-strips {
+    layout-type: row;
+    height: 1s;
+    col-between: 1px;
+    child-space: 0px;
+}
+
+
+/* ============================================================
+   CHANNEL STRIP
+   ============================================================ */
+
+channel-strip {
+    width: 80px;
+    min-width: 80px;
+    max-width: 80px;
+    height: 1s;
+    layout-type: column;
+    background-color: #282828;
+    border-width: 0px 1px 0px 0px;
+    border-color: #353535;
+    child-space: 4px;
+}
+
+channel-strip:hover {
+    background-color: #2C2C2C;
+}
+
+.strip-color-bar {
+    width: 3px;
+    height: 1s;
+    border-radius: 1px;
+}
+
+channel-strip .track-name {
+    font-size: 10;
+    color: #C0C0C0;
+    width: 1s;
+    height: 16px;
+    child-space: auto;
+    overflow: hidden;
+}
+
+
+/* -- Mute button -- */
+
+.btn-mute {
+    width: 28px;
+    height: 22px;
+    min-height: 22px;
+    background-color: #3D3D3D;
+    border-width: 1px;
+    border-color: #505050;
+    border-radius: 2px;
+    font-size: 10;
+    font-weight: bold;
+    color: #A0A0A0;
+    child-space: auto;
+    transition: background-color 100ms;
+}
+
+.btn-mute:hover {
+    background-color: #4A4A4A;
+}
+
+.btn-mute:active {
+    background-color: #353535;
+}
+
+.btn-mute.active {
+    background-color: #5A3800;
+    border-color: #FF9800;
+    color: #FF9800;
+}
+
+.btn-mute.active:hover {
+    background-color: #6E4500;
+}
+
+
+/* -- Solo button -- */
+
+.btn-solo {
+    width: 28px;
+    height: 22px;
+    min-height: 22px;
+    background-color: #3D3D3D;
+    border-width: 1px;
+    border-color: #505050;
+    border-radius: 2px;
+    font-size: 10;
+    font-weight: bold;
+    color: #A0A0A0;
+    child-space: auto;
+    transition: background-color 100ms;
+}
+
+.btn-solo:hover {
+    background-color: #4A4A4A;
+}
+
+.btn-solo:active {
+    background-color: #353535;
+}
+
+.btn-solo.active {
+    background-color: #5A4800;
+    border-color: #FFC107;
+    color: #FFC107;
+}
+
+.btn-solo.active:hover {
+    background-color: #6E5800;
+}
+
+
+/* -- dB readout -- */
+
+.db-display {
+    font-size: 9;
+    color: #707070;
+    width: 1s;
+    height: 14px;
+    child-space: auto;
+}
+
+
+/* ============================================================
+   PEAK METER
+   ============================================================ */
+
+peak-meter {
+    width: 12px;
+    min-width: 12px;
+    height: 1s;
+    background-color: #181818;
+    border-width: 1px;
+    border-color: #303030;
+    border-radius: 1px;
+}
+
+
+/* ============================================================
+   FADER
+   ============================================================ */
+
+fader {
+    width: 24px;
+    min-width: 24px;
+    height: 1s;
+    background-color: #1E1E1E;
+    border-width: 1px;
+    border-color: #353535;
+    border-radius: 2px;
+}
+
+
+/* ============================================================
+   PIANO ROLL VIEW
+   ============================================================ */
+
+piano-roll-view {
+    width: 1s;
+    height: 1s;
+    layout-type: row;
+    background-color: #1A1A1A;
+    overflow: hidden;
+}
+
+.piano-roll-grid {
+    width: 1s;
+    height: 1s;
+    background-color: #1A1A1A;
+}
+
+
+/* -- Quantize toolbar at top of piano roll -- */
+
+.quantize-bar {
+    width: 1s;
+    height: 28px;
+    min-height: 28px;
+    max-height: 28px;
+    layout-type: row;
+    background-color: #252525;
+    border-width: 0px 0px 1px 0px;
+    border-color: #383838;
+    child-space: 4px;
+    col-between: 2px;
+    child-top: 1s;
+    child-bottom: 1s;
+    child-left: 8px;
+}
+
+.quantize-btn {
+    height: 20px;
+    min-width: 32px;
+    background-color: #3D3D3D;
+    border-width: 1px;
+    border-color: #4A4A4A;
+    border-radius: 2px;
+    font-size: 10;
+    color: #909090;
+    child-space: auto;
+    child-left: 6px;
+    child-right: 6px;
+    transition: background-color 100ms;
+}
+
+.quantize-btn:hover {
+    background-color: #484848;
+    color: #C0C0C0;
+}
+
+.quantize-btn:active {
+    background-color: #353535;
+}
+
+.quantize-btn.active {
+    background-color: #2A3D5A;
+    border-color: #5B9BD5;
+    color: #5B9BD5;
+    font-weight: bold;
+}
+
+.quantize-btn.active:hover {
+    background-color: #354D6E;
+}
+
+
+/* ============================================================
+   KEYBOARD STRIP (piano roll left sidebar)
+   ============================================================ */
+
+keyboard-strip {
+    width: 60px;
+    min-width: 60px;
+    max-width: 60px;
+    height: 1s;
+    background-color: #222222;
+    border-width: 0px 1px 0px 0px;
+    border-color: #383838;
+}
+
+
+/* ============================================================
+   PREFERENCES VIEW
+   ============================================================ */
+
+preferences-view {
+    width: 1s;
+    height: 1s;
+    layout-type: column;
+    background-color: #1E1E1E;
+    child-space: 16px;
+    child-left: 24px;
+    child-top: 16px;
+}
+
+.prefs-title {
+    font-size: 16;
+    font-weight: bold;
+    color: #E0E0E0;
+    height: 28px;
+}
+
+.prefs-content {
+    layout-type: column;
+    width: 1s;
+    row-between: 8px;
+    child-space: 0px;
+}
+
+.prefs-row {
+    layout-type: row;
+    width: 1s;
+    height: 28px;
+    col-between: 12px;
+    child-top: 1s;
+    child-bottom: 1s;
+}
+
+.prefs-label {
+    min-width: 120px;
+    font-size: 12;
+    color: #A0A0A0;
+}
+
+.prefs-value {
+    font-size: 12;
+    color: #E0E0E0;
+}
+
+.prefs-btn {
+    height: 28px;
+    min-width: 120px;
+    background-color: #3D3D3D;
+    border-width: 1px;
+    border-color: #505050;
+    border-radius: 3px;
+    font-size: 11;
+    color: #D0D0D0;
+    child-space: auto;
+    child-left: 12px;
+    child-right: 12px;
+    transition: background-color 100ms;
+}
+
+.prefs-btn:hover {
+    background-color: #4A4A4A;
+    border-color: #5B9BD5;
+    color: #E0E0E0;
+}
+
+.prefs-btn:active {
+    background-color: #353535;
+}
+
+
+/* ============================================================
+   SCROLLBAR OVERRIDES
+   ============================================================ */
+
+scrollbar {
+    background-color: #1E1E1E;
+    width: 8px;
+    border-radius: 4px;
+}
+
+scrollbar .thumb {
+    background-color: #404040;
+    border-radius: 4px;
+    transition: background-color 150ms;
+}
+
+scrollbar .thumb:hover {
+    background-color: #555555;
+}
+
+scrollbar .thumb:active {
+    background-color: #606060;
+}
+
+
+/* ============================================================
+   GENERIC BUTTON OVERRIDES
+   ============================================================ */
+
+button {
+    background-color: #3D3D3D;
+    border-width: 1px;
+    border-color: #505050;
+    border-radius: 3px;
+    child-space: auto;
+    transition: background-color 100ms;
+}
+
+button:hover {
+    background-color: #484848;
+}
+
+button:active {
+    background-color: #353535;
+}
+
+button:focus {
+    border-color: #5B9BD5;
+}
+
+button:disabled {
+    opacity: 0.35;
+}
+
+
+/* ============================================================
+   TEXTBOX OVERRIDES
+   ============================================================ */
+
+textbox {
+    background-color: #1A1A1A;
+    border-width: 1px;
+    border-color: #404040;
+    border-radius: 2px;
+    color: #E0E0E0;
+    font-size: 12;
+    child-space: 4px;
+    child-left: 6px;
+    child-right: 6px;
+    transition: border-color 150ms;
+}
+
+textbox:focus {
+    border-color: #5B9BD5;
+}
+
+textbox:hover {
+    border-color: #505050;
+}
+
+
+/* ============================================================
+   TOOLTIP & POPUP
+   ============================================================ */
+
+tooltip {
+    background-color: #383838;
+    border-width: 1px;
+    border-color: #505050;
+    border-radius: 3px;
+    font-size: 11;
+    color: #D0D0D0;
+    child-space: 4px;
+    child-left: 8px;
+    child-right: 8px;
+}
+
+popup {
+    background-color: #2D2D2D;
+    border-width: 1px;
+    border-color: #454545;
+    border-radius: 4px;
+}
+
+
+/* ============================================================
+   SLIDER OVERRIDES
+   ============================================================ */
+
+slider {
+    background-color: #2D2D2D;
+    border-radius: 2px;
+    height: 4px;
+}
+
+slider .track {
+    background-color: #404040;
+    border-radius: 2px;
+}
+
+slider .active {
+    background-color: #5B9BD5;
+    border-radius: 2px;
+}
+
+slider .thumb {
+    width: 12px;
+    height: 12px;
+    background-color: #D0D0D0;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: #808080;
+    transition: background-color 100ms;
+}
+
+slider .thumb:hover {
+    background-color: #E8E8E8;
+}
+
+slider .thumb:active {
+    background-color: #5B9BD5;
+    border-color: #5B9BD5;
+}
+
+
+/* ============================================================
+   CHECKBOX OVERRIDES
+   ============================================================ */
+
+checkbox {
+    width: 16px;
+    height: 16px;
+    background-color: #2D2D2D;
+    border-width: 1px;
+    border-color: #505050;
+    border-radius: 2px;
+    transition: background-color 100ms;
+}
+
+checkbox:hover {
+    border-color: #5B9BD5;
+}
+
+checkbox:checked {
+    background-color: #5B9BD5;
+    border-color: #5B9BD5;
+}
+
+
+/* ============================================================
+   DROPDOWN / PICKLIST OVERRIDES
+   ============================================================ */
+
+dropdown {
+    background-color: #3D3D3D;
+    border-width: 1px;
+    border-color: #505050;
+    border-radius: 3px;
+    height: 28px;
+    child-space: auto;
+    child-left: 8px;
+    child-right: 8px;
+    transition: border-color 100ms;
+}
+
+dropdown:hover {
+    border-color: #606060;
+}
+
+dropdown:focus {
+    border-color: #5B9BD5;
+}
+
+/* ============================================================
+   MISSING LAYOUT CLASSES (code-referenced but previously unstyled)
+   ============================================================ */
+
+/* -- Channel strip internals -- */
+.strip-content {
+    layout-type: column;
+    width: 1s;
+    height: 1s;
+    child-space: 4px;
+}
+
+.strip-name {
+    font-size: 11;
+    color: #E0E0E0;
+    height: 18px;
+    width: 1s;
+    child-left: 4px;
+    overflow: hidden;
+}
+
+.strip-btn-row {
+    layout-type: row;
+    width: 1s;
+    height: 22px;
+    col-between: 2px;
+    child-left: 2px;
+}
+
+.strip-mute-btn {
+    width: 28px;
+    height: 20px;
+    background-color: #3D3D3D;
+    border-radius: 2px;
+    child-space: auto;
+    font-size: 10;
+    transition: background-color 100ms;
+}
+
+.strip-mute-btn:hover {
+    background-color: #4A4A4A;
+}
+
+.strip-mute-btn.active {
+    background-color: #FF9800;
+    color: #1E1E1E;
+}
+
+.strip-solo-btn {
+    width: 28px;
+    height: 20px;
+    background-color: #3D3D3D;
+    border-radius: 2px;
+    child-space: auto;
+    font-size: 10;
+    transition: background-color 100ms;
+}
+
+.strip-solo-btn:hover {
+    background-color: #4A4A4A;
+}
+
+.strip-solo-btn.active {
+    background-color: #FFC107;
+    color: #1E1E1E;
+}
+
+.strip-fader-meter {
+    layout-type: row;
+    width: 1s;
+    height: 1s;
+    col-between: 2px;
+}
+
+.strip-fader {
+    width: 24px;
+    height: 1s;
+}
+
+.strip-meter {
+    width: 12px;
+    height: 1s;
+}
+
+.strip-db-label {
+    font-size: 10;
+    color: #A0A0A0;
+    height: 14px;
+    width: 1s;
+    child-space: auto;
+}
+
+/* -- Mixer view layout -- */
+.mixer-strip-row {
+    layout-type: row;
+    width: 1s;
+    height: 1s;
+    col-between: 2px;
+    child-space: 4px;
+}
+
+.mixer-cpu-panel {
+    layout-type: column;
+    width: 60px;
+    height: 1s;
+    background-color: #2D2D2D;
+    border-left: 1px;
+    border-color: #404040;
+    child-space: 8px;
+}
+
+.cpu-title {
+    font-size: 10;
+    color: #707070;
+    child-space: auto;
+}
+
+.cpu-value {
+    font-size: 11;
+    color: #E0E0E0;
+    child-space: auto;
+}
+
+/* -- Arrangement view layout -- */
+.ruler-row {
+    layout-type: row;
+    width: 1s;
+    height: 24px;
+}
+
+.ruler-corner {
+    width: 180px;
+    height: 24px;
+    background-color: #2D2D2D;
+    border-bottom: 1px;
+    border-right: 1px;
+    border-color: #404040;
+}
+
+.track-rows {
+    layout-type: column;
+    width: 1s;
+    height: 1s;
+}
+
+.track-row {
+    layout-type: row;
+    width: 1s;
+    height: 80px;
+}
+
+/* -- Piano roll layout -- */
+.quantize-toolbar {
+    layout-type: row;
+    width: 1s;
+    height: 28px;
+    background-color: #2D2D2D;
+    border-bottom: 1px;
+    border-color: #404040;
+    col-between: 4px;
+    child-left: 8px;
+    child-top: auto;
+    child-bottom: auto;
+}
+
+.quantize-label {
+    font-size: 11;
+    color: #A0A0A0;
+    child-space: auto;
+}
+
+.piano-roll-content {
+    layout-type: row;
+    width: 1s;
+    height: 1s;
 }

@@ -40,10 +40,7 @@ pub enum DiskEvent {
     },
 
     /// An error occurred during recording.
-    RecordingError {
-        track_id: TrackId,
-        error: String,
-    },
+    RecordingError { track_id: TrackId, error: String },
 }
 
 /// State for a single active recording session.
@@ -214,11 +211,7 @@ fn drain_ring_buffer(
 fn finalize_recording(mut recording: ActiveRecording, evt_tx: &Sender<DiskEvent>) {
     // Drain any remaining samples
     let mut batch = vec![0.0f32; BATCH_SIZE];
-    let remaining = drain_ring_buffer(
-        &mut recording.consumer,
-        &mut batch,
-        &mut recording.writer,
-    );
+    let remaining = drain_ring_buffer(&mut recording.consumer, &mut batch, &mut recording.writer);
     recording.total_samples += remaining as u64;
 
     // Finalize WAV header (updates the data chunk size)

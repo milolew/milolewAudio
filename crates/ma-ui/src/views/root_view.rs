@@ -61,17 +61,15 @@ impl RootView {
             .class("tab-bar");
 
             // Main content area — switches based on active_view
-            Binding::new(cx, AppData::active_view, |cx, view| {
-                match view.get(cx) {
-                    ActiveView::Arrangement => {
-                        ArrangementView::new(cx);
-                    }
-                    ActiveView::Mixer => {
-                        MixerView::new(cx);
-                    }
-                    ActiveView::PianoRoll => {
-                        PianoRollView::new(cx);
-                    }
+            Binding::new(cx, AppData::active_view, |cx, view| match view.get(cx) {
+                ActiveView::Arrangement => {
+                    ArrangementView::new(cx);
+                }
+                ActiveView::Mixer => {
+                    MixerView::new(cx);
+                }
+                ActiveView::PianoRoll => {
+                    PianoRollView::new(cx);
                 }
             });
         })

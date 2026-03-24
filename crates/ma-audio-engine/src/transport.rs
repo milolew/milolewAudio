@@ -161,7 +161,8 @@ impl Transport {
                 let mut new_pos = current + frames as SamplePos;
 
                 // Handle loop
-                if self.loop_enabled && self.loop_end > self.loop_start && new_pos >= self.loop_end {
+                if self.loop_enabled && self.loop_end > self.loop_start && new_pos >= self.loop_end
+                {
                     new_pos = self.loop_start + (new_pos - self.loop_end);
                 }
 

@@ -73,10 +73,7 @@ impl Drop for MockEngineHandle {
 
 /// Spawn the mock engine on a background thread.
 /// Returns a handle that shuts down the engine on drop.
-pub fn spawn_mock_engine(
-    endpoint: EngineEndpoint,
-    track_ids: Vec<TrackId>,
-) -> MockEngineHandle {
+pub fn spawn_mock_engine(endpoint: EngineEndpoint, track_ids: Vec<TrackId>) -> MockEngineHandle {
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
 
@@ -163,9 +160,13 @@ fn run_mock_engine(
         }
 
         // Send CPU load
-        let _ = endpoint.response_tx.push(EngineResponse::CpuLoad(
-            if state.is_playing { 0.15 } else { 0.02 },
-        ));
+        let _ = endpoint
+            .response_tx
+            .push(EngineResponse::CpuLoad(if state.is_playing {
+                0.15
+            } else {
+                0.02
+            }));
 
         // Sleep to maintain ~60Hz update rate
         let elapsed = now.elapsed();

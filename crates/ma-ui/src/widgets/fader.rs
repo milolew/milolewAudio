@@ -48,12 +48,16 @@ fn volume_to_db(volume: f32) -> f32 {
     20.0 * volume.log10()
 }
 
-/// Format dB value for display.
-fn format_db(db: f32) -> String {
+/// Format dB value into a stack-allocated buffer to avoid per-frame heap allocation.
+fn format_db(db: f32, buf: &mut [u8; 16]) -> &str {
+    use std::io::Write;
     if db.is_infinite() && db.is_sign_negative() {
-        "-inf dB".to_string()
+        "-inf dB"
     } else {
-        format!("{:.1} dB", db)
+        let mut cursor = std::io::Cursor::new(&mut buf[..]);
+        let _ = write!(cursor, "{:.1} dB", db);
+        let len = cursor.position() as usize;
+        std::str::from_utf8(&buf[..len]).unwrap_or("? dB")
     }
 }
 
@@ -79,20 +83,18 @@ impl View for Fader {
         let track_y = bounds.y + padding;
         let track_w = bounds.w - 2.0 * padding;
         let track_h = bounds.h - 2.0 * padding - label_area_h;
-        let corner_r = 2.0 * scale;
 
-        // -- Background track (rounded rect) --
+        // -- Background track --
         let mut bg_paint = vg::Paint::default();
-        bg_paint.set_color(vg::Color::from_argb(255, TRACK_BG.0, TRACK_BG.1, TRACK_BG.2));
+        bg_paint.set_color(vg::Color::from_argb(
+            255, TRACK_BG.0, TRACK_BG.1, TRACK_BG.2,
+        ));
         bg_paint.set_style(vg::PaintStyle::Fill);
         bg_paint.set_anti_alias(true);
-
-        let bg_rrect = vg::RRect::new_rect_xy(
+        canvas.draw_rect(
             vg::Rect::from_xywh(track_x, track_y, track_w, track_h),
-            corner_r,
-            corner_r,
+            &bg_paint,
         );
-        canvas.draw_rrect(bg_rrect, &bg_paint);
 
         // -- Filled region from bottom --
         let fill_h = (volume.clamp(0.0, 1.0) * track_h).max(0.0);
@@ -108,21 +110,16 @@ impl View for Fader {
             ));
             fill_paint.set_style(vg::PaintStyle::Fill);
             fill_paint.set_anti_alias(true);
-
-            // Clip fill to the track rounded rect bounds
-            canvas.save();
-            canvas.clip_rrect(bg_rrect, vg::ClipOp::Intersect, true);
             canvas.draw_rect(
                 vg::Rect::from_xywh(track_x, fill_y, track_w, fill_h),
                 &fill_paint,
             );
-            canvas.restore();
         }
 
         // -- Thumb (horizontal bar at volume position) --
         let thumb_h = 6.0 * scale;
-        let thumb_y = fill_y - thumb_h / 2.0;
-        let thumb_y = thumb_y.clamp(track_y - thumb_h / 2.0, track_y + track_h - thumb_h / 2.0);
+        let thumb_y = (fill_y - thumb_h / 2.0)
+            .clamp(track_y - thumb_h / 2.0, track_y + track_h - thumb_h / 2.0);
 
         let mut thumb_paint = vg::Paint::default();
         thumb_paint.set_color(vg::Color::from_argb(
@@ -133,17 +130,15 @@ impl View for Fader {
         ));
         thumb_paint.set_style(vg::PaintStyle::Fill);
         thumb_paint.set_anti_alias(true);
-
-        let thumb_rrect = vg::RRect::new_rect_xy(
+        canvas.draw_rect(
             vg::Rect::from_xywh(track_x, thumb_y, track_w, thumb_h),
-            1.0 * scale,
-            1.0 * scale,
+            &thumb_paint,
         );
-        canvas.draw_rrect(thumb_rrect, &thumb_paint);
 
         // -- dB label at bottom --
         let db = volume_to_db(volume);
-        let label = format_db(db);
+        let mut db_buf = [0u8; 16];
+        let label = format_db(db, &mut db_buf);
 
         let mut text_paint = vg::Paint::default();
         text_paint.set_color(vg::Color::from_argb(
@@ -157,7 +152,7 @@ impl View for Fader {
         let font = vg::Font::default();
         let label_y = bounds.y + bounds.h - 2.0 * scale;
         let label_x = bounds.x + padding;
-        canvas.draw_str(&label, (label_x, label_y), &font, &text_paint);
+        canvas.draw_str(label, (label_x, label_y), &font, &text_paint);
     }
 
     fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
@@ -174,11 +169,11 @@ impl View for Fader {
                 self.drag_start_y = cx.mouse().cursor_y;
                 self.drag_start_value = volume;
                 cx.capture();
-                cx.lock_cursor_icon();
                 meta.consume();
             }
             WindowEvent::MouseDoubleClick(MouseButton::Left) => {
-                // Reset to default volume
+                // Reset to default volume on double-click
+                self.dragging = false;
                 cx.emit(AppEvent::SetTrackVolume {
                     track_id: self.track_id,
                     volume: DEFAULT_VOLUME,
@@ -210,7 +205,6 @@ impl View for Fader {
                 if self.dragging {
                     self.dragging = false;
                     cx.release();
-                    cx.unlock_cursor_icon();
                     meta.consume();
                 }
             }

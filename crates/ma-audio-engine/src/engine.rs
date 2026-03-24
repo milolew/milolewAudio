@@ -130,10 +130,8 @@ pub fn build_engine(config: EngineConfig) -> (CallbackState, EngineHandle) {
     let mut node_counter = NodeIdCounter::new();
 
     // Create ring buffers for UI ↔ Engine communication
-    let (command_producer, command_consumer) =
-        rtrb::RingBuffer::new(COMMAND_RING_SIZE);
-    let (event_producer, event_consumer) =
-        rtrb::RingBuffer::new(EVENT_RING_SIZE);
+    let (command_producer, command_consumer) = rtrb::RingBuffer::new(COMMAND_RING_SIZE);
+    let (event_producer, event_consumer) = rtrb::RingBuffer::new(EVENT_RING_SIZE);
 
     // Create disk I/O thread
     let (disk_cmd_tx, disk_evt_rx) = disk_io::spawn_disk_io_thread();
@@ -336,10 +334,7 @@ mod tests {
         let (mut state, mut handle) = build_engine(config);
 
         // Send a command from UI
-        handle
-            .command_producer
-            .push(EngineCommand::Play)
-            .unwrap();
+        handle.command_producer.push(EngineCommand::Play).unwrap();
 
         // Process on audio thread
         crate::command_processor::process_commands(
@@ -354,6 +349,9 @@ mod tests {
 
         // Check event was sent back
         let event = handle.event_consumer.pop().unwrap();
-        assert!(matches!(event, EngineEvent::TransportStateChanged(TransportState::Playing)));
+        assert!(matches!(
+            event,
+            EngineEvent::TransportStateChanged(TransportState::Playing)
+        ));
     }
 }

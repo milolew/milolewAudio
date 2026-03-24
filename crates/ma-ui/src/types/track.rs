@@ -54,7 +54,6 @@ impl TrackState {
             color,
         }
     }
-
 }
 
 /// Clip data — a region on a track containing notes or audio reference.
@@ -96,7 +95,12 @@ impl ClipState {
             start_tick: self.start_tick,
             duration_ticks: self.duration_ticks,
             name: self.name.clone(),
-            notes: self.notes.iter().filter(|n| n.id != note_id).copied().collect(),
+            notes: self
+                .notes
+                .iter()
+                .filter(|n| n.id != note_id)
+                .copied()
+                .collect(),
         }
     }
 

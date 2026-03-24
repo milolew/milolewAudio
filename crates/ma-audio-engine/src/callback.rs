@@ -80,14 +80,14 @@ unsafe impl Send for CallbackState {}
 /// # Real-Time Safety
 /// This function MUST NOT: allocate, lock, do I/O, panic.
 #[inline]
-pub fn audio_callback(
-    state: &mut CallbackState,
-    output: &mut [f32],
-    num_frames: u32,
-) {
+pub fn audio_callback(state: &mut CallbackState, output: &mut [f32], num_frames: u32) {
     state.callback_count += 1;
     let measure_cpu = state.callback_count.is_multiple_of(16);
-    let start = if measure_cpu { Some(Instant::now()) } else { None };
+    let start = if measure_cpu {
+        Some(Instant::now())
+    } else {
+        None
+    };
 
     // 1. Drain commands
     let shutdown = command_processor::process_commands(
@@ -161,8 +161,9 @@ pub fn audio_callback(
 
     // 8. Read output from OutputNode
     if let Some(output_idx) = state.output_node_index {
-        if let Some(output_node) =
-            state.graph.node_downcast_mut::<crate::graph::nodes::output_node::OutputNode>(output_idx)
+        if let Some(output_node) = state
+            .graph
+            .node_downcast_mut::<crate::graph::nodes::output_node::OutputNode>(output_idx)
         {
             output_node.read_output_interleaved(output);
         } else {
@@ -179,7 +180,8 @@ pub fn audio_callback(
     if let Some(start) = start {
         let elapsed = start.elapsed();
         state.last_callback_duration = elapsed;
-        let budget = std::time::Duration::from_secs_f64(num_frames as f64 / state.sample_rate as f64);
+        let budget =
+            std::time::Duration::from_secs_f64(num_frames as f64 / state.sample_rate as f64);
         let cpu_load = elapsed.as_secs_f32() / budget.as_secs_f32();
         let _ = state.event_producer.push(EngineEvent::CpuLoad(cpu_load));
     }
@@ -193,8 +195,9 @@ fn send_meter_events(state: &mut CallbackState, _context: &ProcessContext) {
     // For now, send a master peak event based on the output node.
 
     if let Some(output_idx) = state.output_node_index {
-        if let Some(output_node) =
-            state.graph.node_downcast_mut::<crate::graph::nodes::output_node::OutputNode>(output_idx)
+        if let Some(output_node) = state
+            .graph
+            .node_downcast_mut::<crate::graph::nodes::output_node::OutputNode>(output_idx)
         {
             let peaks = output_node.output_buffer().peak_levels();
             let _ = state.event_producer.push(EngineEvent::MasterPeakMeter {

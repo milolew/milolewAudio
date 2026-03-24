@@ -7,27 +7,20 @@ use vizia::prelude::*;
 use vizia::vg;
 
 use crate::app_data::{AppData, AppEvent};
-use crate::types::midi::note_name;
-
-/// Black key pitch classes within an octave (C=0).
-const BLACK_KEY_CLASSES: [u8; 5] = [1, 3, 6, 8, 10];
-
-/// Returns true if the given MIDI pitch is a black key.
-fn is_black_key(pitch: u8) -> bool {
-    BLACK_KEY_CLASSES.contains(&(pitch % 12))
-}
-
-/// Returns true if the given pitch is a C note.
-fn is_c_note(pitch: u8) -> bool {
-    pitch % 12 == 0
-}
+use crate::types::midi::{is_black_key, is_c_note, note_name};
 
 /// Vertical piano keyboard strip displayed alongside the piano roll grid.
-pub struct KeyboardStrip;
+pub struct KeyboardStrip {
+    /// Pitch of the currently pressed key (for correct NoteOff on release).
+    pressed_pitch: Option<u8>,
+}
 
 impl KeyboardStrip {
     pub fn new(cx: &mut Context) -> Handle<'_, Self> {
-        Self.build(cx, |_cx| {})
+        Self {
+            pressed_pitch: None,
+        }
+        .build(cx, |_cx| {})
     }
 }
 
@@ -86,10 +79,6 @@ impl View for KeyboardStrip {
         text_paint.set_color(vg::Color::from_argb(255, 40, 40, 40));
         text_paint.set_anti_alias(true);
 
-        let mut text_paint_white = vg::Paint::default();
-        text_paint_white.set_color(vg::Color::from_argb(255, 180, 180, 180));
-        text_paint_white.set_anti_alias(true);
-
         let font = vg::Font::default();
 
         // Black key visual width (shorter than white keys)
@@ -98,7 +87,7 @@ impl View for KeyboardStrip {
         // Draw each visible pitch row as a piano key
         for i in 0..visible_rows {
             let pitch_i32 = scroll_y as i32 - i as i32;
-            if pitch_i32 < 0 || pitch_i32 > 127 {
+            if !(0..=127).contains(&pitch_i32) {
                 continue;
             }
             let pitch = pitch_i32 as u8;
@@ -179,6 +168,7 @@ impl View for KeyboardStrip {
 
                 if let Some(app) = cx.data::<AppData>() {
                     let pitch = app.piano_roll.y_to_pitch(cursor_y, bounds.y);
+                    self.pressed_pitch = Some(pitch);
                     cx.emit(AppEvent::PreviewNoteOn {
                         note: pitch,
                         velocity: 100,
@@ -190,11 +180,7 @@ impl View for KeyboardStrip {
                 meta.consume();
             }
             WindowEvent::MouseUp(MouseButton::Left) => {
-                let bounds = cx.bounds();
-                let cursor_y = cx.mouse().cursor_y;
-
-                if let Some(app) = cx.data::<AppData>() {
-                    let pitch = app.piano_roll.y_to_pitch(cursor_y, bounds.y);
+                if let Some(pitch) = self.pressed_pitch.take() {
                     cx.emit(AppEvent::PreviewNoteOff { note: pitch });
                 }
 

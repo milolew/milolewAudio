@@ -107,10 +107,7 @@ pub enum TopologyCommand {
     },
 
     /// Remove a clip from a track.
-    RemoveClip {
-        track_id: TrackId,
-        clip_id: ClipId,
-    },
+    RemoveClip { track_id: TrackId, clip_id: ClipId },
 }
 
 // Ensure TopologyCommand is Send.

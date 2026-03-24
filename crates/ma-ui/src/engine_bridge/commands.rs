@@ -17,18 +17,44 @@ pub enum EngineCommand {
     SetTimeSignature(TimeSignature),
 
     // Track parameters
-    SetTrackVolume { track_id: TrackId, volume: f32 },
-    SetTrackPan { track_id: TrackId, pan: f32 },
-    SetTrackMute { track_id: TrackId, mute: bool },
-    SetTrackSolo { track_id: TrackId, solo: bool },
+    SetTrackVolume {
+        track_id: TrackId,
+        volume: f32,
+    },
+    SetTrackPan {
+        track_id: TrackId,
+        pan: f32,
+    },
+    SetTrackMute {
+        track_id: TrackId,
+        mute: bool,
+    },
+    SetTrackSolo {
+        track_id: TrackId,
+        solo: bool,
+    },
 
     // MIDI preview (live playing from UI)
-    NoteOn { channel: u8, note: u8, velocity: u8 },
-    NoteOff { channel: u8, note: u8, velocity: u8 },
+    NoteOn {
+        channel: u8,
+        note: u8,
+        velocity: u8,
+    },
+    NoteOff {
+        channel: u8,
+        note: u8,
+        velocity: u8,
+    },
 
     // Clip note editing
-    AddNote { clip_id: ClipId, note: Note },
-    RemoveNote { clip_id: ClipId, note_id: NoteId },
+    AddNote {
+        clip_id: ClipId,
+        note: Note,
+    },
+    RemoveNote {
+        clip_id: ClipId,
+        note_id: NoteId,
+    },
     MoveNote {
         clip_id: ClipId,
         note_id: NoteId,

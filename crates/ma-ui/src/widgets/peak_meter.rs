@@ -89,10 +89,7 @@ fn draw_channel_bar(
             paint.set_color(vg::Color::from_argb(255, RED.0, RED.1, RED.2));
             paint.set_style(vg::PaintStyle::Fill);
             paint.set_anti_alias(true);
-            canvas.draw_rect(
-                vg::Rect::from_xywh(x, red_top, bar_width, red_h),
-                &paint,
-            );
+            canvas.draw_rect(vg::Rect::from_xywh(x, red_top, bar_width, red_h), &paint);
         }
     }
 
@@ -119,7 +116,9 @@ impl View for PeakMeter {
 
         // Background
         let mut bg_paint = vg::Paint::default();
-        bg_paint.set_color(vg::Color::from_argb(255, BG_COLOR.0, BG_COLOR.1, BG_COLOR.2));
+        bg_paint.set_color(vg::Color::from_argb(
+            255, BG_COLOR.0, BG_COLOR.1, BG_COLOR.2,
+        ));
         bg_paint.set_style(vg::PaintStyle::Fill);
         bg_paint.set_anti_alias(true);
         canvas.draw_rect(
@@ -150,7 +149,9 @@ impl View for PeakMeter {
 
         // Draw L and R channel bars
         draw_channel_bar(canvas, left_x, bottom, bar_width, bar_height, peak_l, scale);
-        draw_channel_bar(canvas, right_x, bottom, bar_width, bar_height, peak_r, scale);
+        draw_channel_bar(
+            canvas, right_x, bottom, bar_width, bar_height, peak_r, scale,
+        );
     }
 
     fn event(&mut self, cx: &mut EventContext, event: &mut Event) {

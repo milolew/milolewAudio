@@ -80,10 +80,7 @@ impl AudioDeviceManager {
             .host
             .default_output_device()
             .and_then(|d| d.name().ok());
-        let default_input_name = self
-            .host
-            .default_input_device()
-            .and_then(|d| d.name().ok());
+        let default_input_name = self.host.default_input_device().and_then(|d| d.name().ok());
 
         if let Ok(devices) = self.host.output_devices() {
             for device in devices {

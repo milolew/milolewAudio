@@ -93,9 +93,7 @@ pub fn create_track(
     track_node
         .volume
         .store(config.initial_volume, Ordering::Relaxed);
-    track_node
-        .pan
-        .store(config.initial_pan, Ordering::Relaxed);
+    track_node.pan.store(config.initial_pan, Ordering::Relaxed);
 
     // Clone Arc handles for UI access
     let volume = Arc::clone(&track_node.volume);
@@ -144,14 +142,8 @@ mod tests {
         );
 
         assert!(result.record_consumer.is_some());
-        assert_eq!(
-            result.track.volume.load(Ordering::Relaxed),
-            0.8
-        );
-        assert_eq!(
-            result.track.pan.load(Ordering::Relaxed),
-            -0.5
-        );
+        assert_eq!(result.track.volume.load(Ordering::Relaxed), 0.8);
+        assert_eq!(result.track.pan.load(Ordering::Relaxed), -0.5);
     }
 
     #[test]

@@ -15,11 +15,8 @@ impl PreferencesView {
                 // Output device
                 HStack::new(cx, |cx| {
                     Label::new(cx, "Output Device:").class("prefs-label");
-                    Label::new(
-                        cx,
-                        AppData::device_status_text.map(|s| s.clone()),
-                    )
-                    .class("prefs-value");
+                    Label::new(cx, AppData::device_status_text.map(|s| s.clone()))
+                        .class("prefs-value");
                 })
                 .class("prefs-row");
 
@@ -45,11 +42,9 @@ impl PreferencesView {
                 .class("prefs-row");
 
                 // Refresh button
-                Button::new(cx, |cx| {
-                    Label::new(cx, "Refresh Devices")
-                })
-                .on_press(|cx| cx.emit(AppEvent::RefreshDevices))
-                .class("prefs-btn");
+                Button::new(cx, |cx| Label::new(cx, "Refresh Devices"))
+                    .on_press(|cx| cx.emit(AppEvent::RefreshDevices))
+                    .class("prefs-btn");
             })
             .class("prefs-content");
         })

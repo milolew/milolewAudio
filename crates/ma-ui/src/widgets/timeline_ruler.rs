@@ -78,8 +78,7 @@ impl View for TimelineRuler {
         if transport.loop_enabled {
             let loop_x_start =
                 bounds.x + ((transport.loop_start as f64 - scroll_x) * zoom_x) as f32;
-            let loop_x_end =
-                bounds.x + ((transport.loop_end as f64 - scroll_x) * zoom_x) as f32;
+            let loop_x_end = bounds.x + ((transport.loop_end as f64 - scroll_x) * zoom_x) as f32;
 
             let lx = loop_x_start.max(bounds.x);
             let rx = loop_x_end.min(bounds.x + bounds.w);
@@ -177,7 +176,12 @@ impl View for TimelineRuler {
                 let bar_num = (bar_tick / ticks_per_bar) + 1;
                 if (bar_num - 1) % bar_label_step == 0 {
                     let label = format!("{}", bar_num);
-                    canvas.draw_str(&label, (x + 3.0 * scale, bounds.y + bounds.h * 0.35), &font, &text_paint);
+                    canvas.draw_str(
+                        &label,
+                        (x + 3.0 * scale, bounds.y + bounds.h * 0.35),
+                        &font,
+                        &text_paint,
+                    );
                 }
             }
 
@@ -201,8 +205,7 @@ impl View for TimelineRuler {
         }
 
         // -- Playhead --
-        let playhead_x =
-            bounds.x + ((transport.position as f64 - scroll_x) * zoom_x) as f32;
+        let playhead_x = bounds.x + ((transport.position as f64 - scroll_x) * zoom_x) as f32;
 
         if playhead_x >= bounds.x && playhead_x <= bounds.x + bounds.w {
             let mut playhead_paint = vg::Paint::default();

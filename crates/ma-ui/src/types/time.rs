@@ -129,9 +129,7 @@ pub fn bbt_to_tick(bbt: BarBeatTick, time_sig: TimeSignature) -> Tick {
     let ticks_per_beat = PPQN;
     let ticks_per_bar = ticks_per_beat * time_sig.numerator as i64;
 
-    (bbt.bar as i64 - 1) * ticks_per_bar
-        + (bbt.beat as i64 - 1) * ticks_per_beat
-        + bbt.tick as i64
+    (bbt.bar as i64 - 1) * ticks_per_bar + (bbt.beat as i64 - 1) * ticks_per_beat + bbt.tick as i64
 }
 
 #[cfg(test)]

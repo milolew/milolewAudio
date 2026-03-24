@@ -63,8 +63,8 @@ pub fn process_commands(
             }
             EngineCommand::Pause => {
                 transport.pause();
-                let _ = event_producer
-                    .push(EngineEvent::TransportStateChanged(TransportState::Paused));
+                let _ =
+                    event_producer.push(EngineEvent::TransportStateChanged(TransportState::Paused));
             }
             EngineCommand::SetPosition(pos) => {
                 transport.set_position(pos);
@@ -116,8 +116,9 @@ pub fn process_commands(
                         set_track_node_recording(graph, track.track_node_id.0, true);
                     }
                 }
-                let _ = event_producer
-                    .push(EngineEvent::TransportStateChanged(TransportState::Recording));
+                let _ = event_producer.push(EngineEvent::TransportStateChanged(
+                    TransportState::Recording,
+                ));
             }
             EngineCommand::StopRecording => {
                 transport.stop_recording();
@@ -125,9 +126,7 @@ pub fn process_commands(
                 for track in tracks {
                     set_track_node_recording(graph, track.track_node_id.0, false);
                 }
-                let _ = event_producer.push(EngineEvent::TransportStateChanged(
-                    transport.state(),
-                ));
+                let _ = event_producer.push(EngineEvent::TransportStateChanged(transport.state()));
             }
 
             // ── Lifecycle ──
@@ -155,9 +154,7 @@ fn set_track_node_recording(graph: &mut AudioGraph, node_id_val: u32, recording:
         if let Some(node) = graph.node(i) {
             if node.node_id() == ma_core::ids::NodeId(node_id_val) {
                 if let Some(track_node) = graph.node_downcast_mut::<TrackNode>(i) {
-                    track_node
-                        .is_recording
-                        .store(recording, Ordering::Relaxed);
+                    track_node.is_recording.store(recording, Ordering::Relaxed);
                 }
                 break;
             }

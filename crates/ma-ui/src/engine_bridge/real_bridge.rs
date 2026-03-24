@@ -98,10 +98,7 @@ impl RealEngineBridge {
         }
 
         // Always send a transport update with current atomic playhead
-        let playhead_samples = self
-            .handle
-            .playhead_position
-            .load(Ordering::Relaxed);
+        let playhead_samples = self.handle.playhead_position.load(Ordering::Relaxed);
         let is_recording = self.handle.is_recording.load(Ordering::Relaxed);
 
         self.response_buf.push(EngineResponse::TransportUpdate {
@@ -110,7 +107,7 @@ impl RealEngineBridge {
             is_recording,
         });
 
-        std::mem::take(&mut self.response_buf)
+        self.response_buf.drain(..).collect()
     }
 
     /// Get track handles for reading atomic parameters.

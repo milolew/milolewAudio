@@ -158,9 +158,7 @@ impl AudioNode for TrackNode {
         }
 
         // Push to recording buffer if armed and recording
-        if self.record_armed.load(Ordering::Relaxed)
-            && self.is_recording.load(Ordering::Relaxed)
-        {
+        if self.record_armed.load(Ordering::Relaxed) && self.is_recording.load(Ordering::Relaxed) {
             // Record the raw input (pre-fader) for clean recording
             if let Some(input) = inputs.first() {
                 let dropped = self.push_to_record_buffer(input);
@@ -197,6 +195,10 @@ impl AudioNode for TrackNode {
         self.id
     }
 
-    fn as_any(&self) -> &dyn Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }

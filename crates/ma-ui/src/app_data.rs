@@ -91,8 +91,14 @@ pub enum AppEvent {
     SelectTrack(TrackId),
 
     // -- Mixer --
-    SetTrackVolume { track_id: TrackId, volume: f32 },
-    SetTrackPan { track_id: TrackId, pan: f32 },
+    SetTrackVolume {
+        track_id: TrackId,
+        volume: f32,
+    },
+    SetTrackPan {
+        track_id: TrackId,
+        pan: f32,
+    },
     ToggleMute(TrackId),
     ToggleSolo(TrackId),
 
@@ -113,10 +119,20 @@ pub enum AppEvent {
         note_id: NoteId,
         new_duration: Tick,
     },
-    PreviewNoteOn { note: u8, velocity: u8 },
-    PreviewNoteOff { note: u8 },
+    PreviewNoteOn {
+        note: u8,
+        velocity: u8,
+    },
+    PreviewNoteOff {
+        note: u8,
+    },
     UpdateInteraction(crate::state::piano_roll_state::PianoRollInteraction),
     SetQuantize(QuantizeGrid),
+
+    // -- Piano roll scroll/zoom --
+    ScrollPianoRollX(f64),
+    ScrollPianoRollY(i8),
+    ZoomPianoRoll(f64),
 }
 
 /// Create a deterministic UUID for demo data (stable across restarts).
@@ -150,10 +166,38 @@ impl AppData {
                 duration_ticks: PPQN * 8,
                 name: "Melody A".into(),
                 notes: vec![
-                    Note { id: NoteId(100), pitch: 60, start_tick: 0, duration_ticks: PPQN / 2, velocity: 100, channel: 0 },
-                    Note { id: NoteId(101), pitch: 64, start_tick: PPQN / 2, duration_ticks: PPQN / 2, velocity: 90, channel: 0 },
-                    Note { id: NoteId(102), pitch: 67, start_tick: PPQN, duration_ticks: PPQN, velocity: 110, channel: 0 },
-                    Note { id: NoteId(103), pitch: 72, start_tick: PPQN * 2, duration_ticks: PPQN * 2, velocity: 80, channel: 0 },
+                    Note {
+                        id: NoteId(100),
+                        pitch: 60,
+                        start_tick: 0,
+                        duration_ticks: PPQN / 2,
+                        velocity: 100,
+                        channel: 0,
+                    },
+                    Note {
+                        id: NoteId(101),
+                        pitch: 64,
+                        start_tick: PPQN / 2,
+                        duration_ticks: PPQN / 2,
+                        velocity: 90,
+                        channel: 0,
+                    },
+                    Note {
+                        id: NoteId(102),
+                        pitch: 67,
+                        start_tick: PPQN,
+                        duration_ticks: PPQN,
+                        velocity: 110,
+                        channel: 0,
+                    },
+                    Note {
+                        id: NoteId(103),
+                        pitch: 72,
+                        start_tick: PPQN * 2,
+                        duration_ticks: PPQN * 2,
+                        velocity: 80,
+                        channel: 0,
+                    },
                 ],
             },
             ClipState {
@@ -163,8 +207,22 @@ impl AppData {
                 duration_ticks: PPQN * 8,
                 name: "Bass Line".into(),
                 notes: vec![
-                    Note { id: NoteId(200), pitch: 36, start_tick: 0, duration_ticks: PPQN * 2, velocity: 120, channel: 0 },
-                    Note { id: NoteId(201), pitch: 40, start_tick: PPQN * 2, duration_ticks: PPQN * 2, velocity: 110, channel: 0 },
+                    Note {
+                        id: NoteId(200),
+                        pitch: 36,
+                        start_tick: 0,
+                        duration_ticks: PPQN * 2,
+                        velocity: 120,
+                        channel: 0,
+                    },
+                    Note {
+                        id: NoteId(201),
+                        pitch: 40,
+                        start_tick: PPQN * 2,
+                        duration_ticks: PPQN * 2,
+                        velocity: 110,
+                        channel: 0,
+                    },
                 ],
             },
             ClipState {
@@ -182,9 +240,30 @@ impl AppData {
                 duration_ticks: PPQN * 12,
                 name: "Pad Chords".into(),
                 notes: vec![
-                    Note { id: NoteId(300), pitch: 60, start_tick: PPQN * 4, duration_ticks: PPQN * 4, velocity: 70, channel: 0 },
-                    Note { id: NoteId(301), pitch: 64, start_tick: PPQN * 4, duration_ticks: PPQN * 4, velocity: 70, channel: 0 },
-                    Note { id: NoteId(302), pitch: 67, start_tick: PPQN * 4, duration_ticks: PPQN * 4, velocity: 70, channel: 0 },
+                    Note {
+                        id: NoteId(300),
+                        pitch: 60,
+                        start_tick: PPQN * 4,
+                        duration_ticks: PPQN * 4,
+                        velocity: 70,
+                        channel: 0,
+                    },
+                    Note {
+                        id: NoteId(301),
+                        pitch: 64,
+                        start_tick: PPQN * 4,
+                        duration_ticks: PPQN * 4,
+                        velocity: 70,
+                        channel: 0,
+                    },
+                    Note {
+                        id: NoteId(302),
+                        pitch: 67,
+                        start_tick: PPQN * 4,
+                        duration_ticks: PPQN * 4,
+                        velocity: 70,
+                        channel: 0,
+                    },
                 ],
             },
         ];
@@ -194,17 +273,22 @@ impl AppData {
             log::warn!("Real audio engine unavailable: {e}. Using mock engine.");
             let (bridge, endpoint) = create_bridge();
             let handle = spawn_mock_engine(endpoint, track_ids.clone());
-            EngineMode::Mock { bridge, _handle: handle }
+            EngineMode::Mock {
+                bridge,
+                _handle: handle,
+            }
         });
 
         let device_status_text = match &engine {
-            EngineMode::Real { device_manager, .. } => {
-                match device_manager.status() {
-                    ma_core::device::DeviceStatus::Active { output_device, actual_sample_rate, actual_buffer_size, .. } =>
-                        format!("{output_device} ({actual_sample_rate} Hz, {actual_buffer_size} buf)"),
-                    _ => "Offline".into(),
-                }
-            }
+            EngineMode::Real { device_manager, .. } => match device_manager.status() {
+                ma_core::device::DeviceStatus::Active {
+                    output_device,
+                    actual_sample_rate,
+                    actual_buffer_size,
+                    ..
+                } => format!("{output_device} ({actual_sample_rate} Hz, {actual_buffer_size} buf)"),
+                _ => "Offline".into(),
+            },
             EngineMode::Mock { .. } => "Mock Engine (no audio device)".into(),
         };
 
@@ -236,7 +320,10 @@ impl AppData {
     }
 
     pub fn clips_for_track(&self, track_id: TrackId) -> Vec<&ClipState> {
-        self.clips.iter().filter(|c| c.track_id == track_id).collect()
+        self.clips
+            .iter()
+            .filter(|c| c.track_id == track_id)
+            .collect()
     }
 
     fn update_clip(&mut self, updated: ClipState) {
@@ -255,7 +342,10 @@ impl AppData {
             .apply_config(device_config, engine_config)
             .map_err(|e| e.to_string())?;
         let bridge = RealEngineBridge::new(handle);
-        Ok(EngineMode::Real { device_manager: Box::new(device_manager), bridge })
+        Ok(EngineMode::Real {
+            device_manager: Box::new(device_manager),
+            bridge,
+        })
     }
 
     /// Send a UI command to whichever engine is active.
@@ -280,14 +370,24 @@ impl AppData {
             EngineCommand::Pause => Some(CoreCommand::Pause),
             EngineCommand::Record => Some(CoreCommand::StartRecording),
             EngineCommand::SetTempo(bpm) => Some(CoreCommand::SetTempo(*bpm)),
-            EngineCommand::SetTrackVolume { track_id, volume } =>
-                Some(CoreCommand::SetTrackVolume { track_id: *track_id, volume: *volume }),
-            EngineCommand::SetTrackPan { track_id, pan } =>
-                Some(CoreCommand::SetTrackPan { track_id: *track_id, pan: *pan }),
-            EngineCommand::SetTrackMute { track_id, mute } =>
-                Some(CoreCommand::SetTrackMute { track_id: *track_id, mute: *mute }),
-            EngineCommand::SetTrackSolo { track_id, solo } =>
-                Some(CoreCommand::SetTrackSolo { track_id: *track_id, solo: *solo }),
+            EngineCommand::SetTrackVolume { track_id, volume } => {
+                Some(CoreCommand::SetTrackVolume {
+                    track_id: *track_id,
+                    volume: *volume,
+                })
+            }
+            EngineCommand::SetTrackPan { track_id, pan } => Some(CoreCommand::SetTrackPan {
+                track_id: *track_id,
+                pan: *pan,
+            }),
+            EngineCommand::SetTrackMute { track_id, mute } => Some(CoreCommand::SetTrackMute {
+                track_id: *track_id,
+                mute: *mute,
+            }),
+            EngineCommand::SetTrackSolo { track_id, solo } => Some(CoreCommand::SetTrackSolo {
+                track_id: *track_id,
+                solo: *solo,
+            }),
             _ => None,
         }
     }
@@ -301,7 +401,11 @@ impl AppData {
         };
         for resp in responses {
             match resp {
-                EngineResponse::TransportUpdate { position, is_playing, is_recording } => {
+                EngineResponse::TransportUpdate {
+                    position,
+                    is_playing,
+                    is_recording,
+                } => {
                     self.transport.position = position;
                     self.transport.is_playing = is_playing;
                     self.transport.is_recording = is_recording;
@@ -309,7 +413,11 @@ impl AppData {
                 EngineResponse::TempoUpdate(bpm) => {
                     self.transport.tempo = bpm;
                 }
-                EngineResponse::MeterUpdate { track_id, peak_l, peak_r } => {
+                EngineResponse::MeterUpdate {
+                    track_id,
+                    peak_l,
+                    peak_r,
+                } => {
                     self.mixer.update_meter(track_id, peak_l, peak_r);
                 }
                 EngineResponse::CpuLoad(load) => {
@@ -323,13 +431,27 @@ impl AppData {
 
     fn dispatch_transport(&mut self, event: &AppEvent) {
         match event {
-            AppEvent::Play => { self.send_command(EngineCommand::Play); }
-            AppEvent::Stop => { self.send_command(EngineCommand::Stop); }
-            AppEvent::Record => { self.send_command(EngineCommand::Record); }
-            AppEvent::Pause => { self.send_command(EngineCommand::Pause); }
-            AppEvent::SetTempo(bpm) => { self.send_command(EngineCommand::SetTempo(*bpm)); }
-            AppEvent::SetPosition(tick) => { self.send_command(EngineCommand::SetPosition(*tick)); }
-            AppEvent::ToggleLoop => { self.transport.loop_enabled = !self.transport.loop_enabled; }
+            AppEvent::Play => {
+                self.send_command(EngineCommand::Play);
+            }
+            AppEvent::Stop => {
+                self.send_command(EngineCommand::Stop);
+            }
+            AppEvent::Record => {
+                self.send_command(EngineCommand::Record);
+            }
+            AppEvent::Pause => {
+                self.send_command(EngineCommand::Pause);
+            }
+            AppEvent::SetTempo(bpm) => {
+                self.send_command(EngineCommand::SetTempo(*bpm));
+            }
+            AppEvent::SetPosition(tick) => {
+                self.send_command(EngineCommand::SetPosition(*tick));
+            }
+            AppEvent::ToggleLoop => {
+                self.transport.loop_enabled = !self.transport.loop_enabled;
+            }
             _ => {}
         }
     }
@@ -353,38 +475,68 @@ impl AppData {
                 if let Some(clip) = self.clips.iter().find(|c| c.id == clip_id) {
                     let new_clip = clip.with_note_removed(*note_id);
                     self.update_clip(new_clip);
-                    self.send_command(EngineCommand::RemoveNote { clip_id, note_id: *note_id });
+                    self.send_command(EngineCommand::RemoveNote {
+                        clip_id,
+                        note_id: *note_id,
+                    });
                 }
             }
-            AppEvent::MoveNote { note_id, new_start, new_pitch } => {
+            AppEvent::MoveNote {
+                note_id,
+                new_start,
+                new_pitch,
+            } => {
                 if let Some(clip) = self.clips.iter().find(|c| c.id == clip_id) {
                     if let Some(note) = clip.notes.iter().find(|n| n.id == *note_id) {
-                        let updated = Note { start_tick: *new_start, pitch: *new_pitch, ..*note };
+                        let updated = Note {
+                            start_tick: *new_start,
+                            pitch: *new_pitch,
+                            ..*note
+                        };
                         let new_clip = clip.with_note_updated(updated);
                         self.update_clip(new_clip);
                         self.send_command(EngineCommand::MoveNote {
-                            clip_id, note_id: *note_id, new_start: *new_start, new_pitch: *new_pitch,
+                            clip_id,
+                            note_id: *note_id,
+                            new_start: *new_start,
+                            new_pitch: *new_pitch,
                         });
                     }
                 }
             }
-            AppEvent::ResizeNote { note_id, new_duration } => {
+            AppEvent::ResizeNote {
+                note_id,
+                new_duration,
+            } => {
                 if let Some(clip) = self.clips.iter().find(|c| c.id == clip_id) {
                     if let Some(note) = clip.notes.iter().find(|n| n.id == *note_id) {
-                        let updated = Note { duration_ticks: *new_duration, ..*note };
+                        let updated = Note {
+                            duration_ticks: *new_duration,
+                            ..*note
+                        };
                         let new_clip = clip.with_note_updated(updated);
                         self.update_clip(new_clip);
                         self.send_command(EngineCommand::ResizeNote {
-                            clip_id, note_id: *note_id, new_duration: *new_duration,
+                            clip_id,
+                            note_id: *note_id,
+                            new_duration: *new_duration,
                         });
                     }
                 }
             }
             AppEvent::PreviewNoteOn { note, velocity } => {
-                self.send_command(EngineCommand::NoteOn { channel: 0, note: *note, velocity: *velocity });
+                self.send_command(EngineCommand::NoteOn {
+                    channel: 0,
+                    note: *note,
+                    velocity: *velocity,
+                });
             }
             AppEvent::PreviewNoteOff { note } => {
-                self.send_command(EngineCommand::NoteOff { channel: 0, note: *note, velocity: 0 });
+                self.send_command(EngineCommand::NoteOff {
+                    channel: 0,
+                    note: *note,
+                    velocity: 0,
+                });
             }
             AppEvent::UpdateInteraction(interaction) => {
                 self.piano_roll.interaction = interaction.clone();
@@ -407,21 +559,22 @@ impl Model for AppData {
 
             // Initialize polling timer (called once on startup from root_view)
             AppEvent::InitTimer => {
-                let timer = cx.add_timer(
-                    Duration::from_millis(16),
-                    None,
-                    |cx, action| {
-                        if let TimerAction::Tick(_) = action {
-                            cx.emit(AppEvent::PollEngine);
-                        }
-                    },
-                );
+                let timer = cx.add_timer(Duration::from_millis(16), None, |cx, action| {
+                    if let TimerAction::Tick(_) = action {
+                        cx.emit(AppEvent::PollEngine);
+                    }
+                });
                 cx.start_timer(timer);
             }
 
             // Transport
-            AppEvent::Play | AppEvent::Stop | AppEvent::Record | AppEvent::Pause
-            | AppEvent::SetTempo(_) | AppEvent::SetPosition(_) | AppEvent::ToggleLoop => {
+            AppEvent::Play
+            | AppEvent::Stop
+            | AppEvent::Record
+            | AppEvent::Pause
+            | AppEvent::SetTempo(_)
+            | AppEvent::SetPosition(_)
+            | AppEvent::ToggleLoop => {
                 self.dispatch_transport(app_event);
             }
 
@@ -436,8 +589,14 @@ impl Model for AppData {
                 if let EngineMode::Real { device_manager, .. } = &mut self.engine {
                     device_manager.enumerate_devices();
                     self.device_status_text = match device_manager.status() {
-                        ma_core::device::DeviceStatus::Active { output_device, actual_sample_rate, actual_buffer_size, .. } =>
-                            format!("{output_device} ({actual_sample_rate} Hz, {actual_buffer_size} buf)"),
+                        ma_core::device::DeviceStatus::Active {
+                            output_device,
+                            actual_sample_rate,
+                            actual_buffer_size,
+                            ..
+                        } => format!(
+                            "{output_device} ({actual_sample_rate} Hz, {actual_buffer_size} buf)"
+                        ),
                         _ => "Offline".into(),
                     };
                 }
@@ -462,50 +621,84 @@ impl Model for AppData {
                 if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
                     track.volume = *volume;
                 }
-                self.send_command(EngineCommand::SetTrackVolume { track_id: *track_id, volume: *volume });
+                self.send_command(EngineCommand::SetTrackVolume {
+                    track_id: *track_id,
+                    volume: *volume,
+                });
             }
             AppEvent::SetTrackPan { track_id, pan } => {
                 if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
                     track.pan = *pan;
                 }
-                self.send_command(EngineCommand::SetTrackPan { track_id: *track_id, pan: *pan });
+                self.send_command(EngineCommand::SetTrackPan {
+                    track_id: *track_id,
+                    pan: *pan,
+                });
             }
             AppEvent::ToggleMute(track_id) => {
-                let new_mute = if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
-                    track.mute = !track.mute;
-                    Some(track.mute)
-                } else {
-                    None
-                };
+                let new_mute =
+                    if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
+                        track.mute = !track.mute;
+                        Some(track.mute)
+                    } else {
+                        None
+                    };
                 if let Some(mute) = new_mute {
-                    self.send_command(EngineCommand::SetTrackMute { track_id: *track_id, mute });
+                    self.send_command(EngineCommand::SetTrackMute {
+                        track_id: *track_id,
+                        mute,
+                    });
                 }
             }
             AppEvent::ToggleSolo(track_id) => {
-                let new_solo = if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
-                    track.solo = !track.solo;
-                    Some(track.solo)
-                } else {
-                    None
-                };
+                let new_solo =
+                    if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
+                        track.solo = !track.solo;
+                        Some(track.solo)
+                    } else {
+                        None
+                    };
                 if let Some(solo) = new_solo {
-                    self.send_command(EngineCommand::SetTrackSolo { track_id: *track_id, solo });
+                    self.send_command(EngineCommand::SetTrackSolo {
+                        track_id: *track_id,
+                        solo,
+                    });
                 }
             }
 
             // Arrangement scroll/zoom
-            AppEvent::ScrollArrangementX(dx) => { self.arrangement.scroll_x += dx; }
-            AppEvent::ScrollArrangementY(dy) => { self.arrangement.scroll_y += dy; }
+            AppEvent::ScrollArrangementX(dx) => {
+                self.arrangement.scroll_x = (self.arrangement.scroll_x + dx).max(0.0);
+            }
+            AppEvent::ScrollArrangementY(dy) => {
+                self.arrangement.scroll_y += dy;
+            }
             AppEvent::ZoomArrangement(factor) => {
                 self.arrangement.zoom_x = (self.arrangement.zoom_x * factor).clamp(0.001, 1.0);
             }
 
-            // Piano roll
-            AppEvent::AddNote(_) | AppEvent::RemoveNote(_) | AppEvent::MoveNote { .. }
-            | AppEvent::ResizeNote { .. } | AppEvent::PreviewNoteOn { .. }
-            | AppEvent::PreviewNoteOff { .. } | AppEvent::UpdateInteraction(_)
+            // Piano roll note editing
+            AppEvent::AddNote(_)
+            | AppEvent::RemoveNote(_)
+            | AppEvent::MoveNote { .. }
+            | AppEvent::ResizeNote { .. }
+            | AppEvent::PreviewNoteOn { .. }
+            | AppEvent::PreviewNoteOff { .. }
+            | AppEvent::UpdateInteraction(_)
             | AppEvent::SetQuantize(_) => {
                 self.dispatch_piano_roll(app_event);
+            }
+
+            // Piano roll scroll/zoom
+            AppEvent::ScrollPianoRollX(dx) => {
+                self.piano_roll.scroll_x = (self.piano_roll.scroll_x + dx).max(0.0);
+            }
+            AppEvent::ScrollPianoRollY(dy) => {
+                self.piano_roll.scroll_y =
+                    (self.piano_roll.scroll_y as i16 + *dy as i16).clamp(0, 127) as u8;
+            }
+            AppEvent::ZoomPianoRoll(factor) => {
+                self.piano_roll.zoom_x = (self.piano_roll.zoom_x * factor).clamp(0.01, 2.0);
             }
         });
     }

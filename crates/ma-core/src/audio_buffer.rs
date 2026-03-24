@@ -107,8 +107,7 @@ impl AudioBuffer {
         let frames = self.frames.min(other.frames) as usize;
         for ch in 0..channels {
             let start = ch * MAX_BUFFER_SIZE;
-            self.data[start..start + frames]
-                .copy_from_slice(&other.data[start..start + frames]);
+            self.data[start..start + frames].copy_from_slice(&other.data[start..start + frames]);
             // Zero remaining frames if self has more
             if (self.frames as usize) > frames {
                 self.data[start + frames..start + self.frames as usize].fill(0.0);
@@ -208,8 +207,7 @@ impl AudioBuffer {
         self.frames = frames;
         for frame in 0..frames as usize {
             for ch in 0..channels {
-                self.data[ch * MAX_BUFFER_SIZE + frame] =
-                    interleaved[frame * channels + ch];
+                self.data[ch * MAX_BUFFER_SIZE + frame] = interleaved[frame * channels + ch];
             }
         }
     }
@@ -227,8 +225,7 @@ impl AudioBuffer {
         }
         for frame in 0..self.frames as usize {
             for ch in 0..self.channels {
-                output[frame * self.channels + ch] =
-                    self.data[ch * MAX_BUFFER_SIZE + frame];
+                output[frame * self.channels + ch] = self.data[ch * MAX_BUFFER_SIZE + frame];
             }
         }
     }
