@@ -176,3 +176,212 @@ fn set_track_node_recording(graph: &mut AudioGraph, graph_index: usize, recordin
         track_node.is_recording.store(recording, Ordering::Release);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::{build_engine, EngineConfig};
+
+    /// Build a minimal engine with one track for testing.
+    fn test_engine() -> (
+        rtrb::Producer<EngineCommand>,
+        rtrb::Consumer<EngineEvent>,
+        crate::callback::CallbackState,
+    ) {
+        let track_id = TrackId::new();
+        let config = EngineConfig {
+            sample_rate: 48000,
+            buffer_size: 256,
+            initial_tracks: vec![(
+                track_id,
+                ma_core::parameters::TrackConfig {
+                    name: "Test".into(),
+                    channel_count: 2,
+                    input_enabled: true,
+                    initial_volume: 1.0,
+                    initial_pan: 0.0,
+                },
+            )],
+        };
+        let (state, handle) = build_engine(config).unwrap();
+        (handle.command_producer, handle.event_consumer, state)
+    }
+
+    fn dispatch(state: &mut crate::callback::CallbackState) -> bool {
+        process_commands(
+            &mut state.command_consumer,
+            &mut state.event_producer,
+            &mut state.transport,
+            &mut state.graph,
+            &state.tracks,
+        )
+    }
+
+    #[test]
+    fn play_command_changes_transport_and_emits_event() {
+        let (mut producer, mut consumer, mut state) = test_engine();
+        producer.push(EngineCommand::Play).unwrap();
+        let shutdown = dispatch(&mut state);
+        assert!(!shutdown);
+        assert_eq!(state.transport.state(), TransportState::Playing);
+        let event = consumer.pop().unwrap();
+        assert!(matches!(
+            event,
+            EngineEvent::TransportStateChanged(TransportState::Playing)
+        ));
+    }
+
+    #[test]
+    fn stop_command_changes_transport() {
+        let (mut producer, mut consumer, mut state) = test_engine();
+        producer.push(EngineCommand::Play).unwrap();
+        dispatch(&mut state);
+        consumer.pop().unwrap(); // drain play event
+        producer.push(EngineCommand::Stop).unwrap();
+        dispatch(&mut state);
+        assert_eq!(state.transport.state(), TransportState::Stopped);
+        let event = consumer.pop().unwrap();
+        assert!(matches!(
+            event,
+            EngineEvent::TransportStateChanged(TransportState::Stopped)
+        ));
+    }
+
+    #[test]
+    fn pause_command_changes_transport() {
+        let (mut producer, mut consumer, mut state) = test_engine();
+        producer.push(EngineCommand::Play).unwrap();
+        dispatch(&mut state);
+        consumer.pop().unwrap();
+        producer.push(EngineCommand::Pause).unwrap();
+        dispatch(&mut state);
+        assert_eq!(state.transport.state(), TransportState::Paused);
+    }
+
+    #[test]
+    fn set_position_command() {
+        let (mut producer, _, mut state) = test_engine();
+        producer.push(EngineCommand::SetPosition(12345)).unwrap();
+        dispatch(&mut state);
+        assert_eq!(state.transport.position(), 12345);
+    }
+
+    #[test]
+    fn set_tempo_command() {
+        let (mut producer, _, mut state) = test_engine();
+        producer.push(EngineCommand::SetTempo(140.0)).unwrap();
+        dispatch(&mut state);
+        assert!((state.transport.tempo() - 140.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn set_track_volume_command() {
+        let (mut producer, _, mut state) = test_engine();
+        let track_id = state.tracks[0].id;
+        producer
+            .push(EngineCommand::SetTrackVolume {
+                track_id,
+                volume: 0.5,
+            })
+            .unwrap();
+        dispatch(&mut state);
+        let vol = state.tracks[0].volume.load(Ordering::Relaxed);
+        assert!((vol - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn set_track_pan_command() {
+        let (mut producer, _, mut state) = test_engine();
+        let track_id = state.tracks[0].id;
+        producer
+            .push(EngineCommand::SetTrackPan {
+                track_id,
+                pan: -0.3,
+            })
+            .unwrap();
+        dispatch(&mut state);
+        let pan = state.tracks[0].pan.load(Ordering::Relaxed);
+        assert!((pan - (-0.3)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn mute_and_solo_commands() {
+        let (mut producer, _, mut state) = test_engine();
+        let track_id = state.tracks[0].id;
+        producer
+            .push(EngineCommand::SetTrackMute {
+                track_id,
+                mute: true,
+            })
+            .unwrap();
+        producer
+            .push(EngineCommand::SetTrackSolo {
+                track_id,
+                solo: true,
+            })
+            .unwrap();
+        dispatch(&mut state);
+        assert!(state.tracks[0].mute.load(Ordering::Relaxed));
+        assert!(state.tracks[0].solo.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn arm_track_command() {
+        let (mut producer, _, mut state) = test_engine();
+        let track_id = state.tracks[0].id;
+        producer
+            .push(EngineCommand::ArmTrack {
+                track_id,
+                armed: true,
+            })
+            .unwrap();
+        dispatch(&mut state);
+        assert!(state.tracks[0].record_armed.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn shutdown_command_returns_true() {
+        let (mut producer, _, mut state) = test_engine();
+        producer.push(EngineCommand::Shutdown).unwrap();
+        let shutdown = dispatch(&mut state);
+        assert!(shutdown);
+    }
+
+    #[test]
+    fn start_stop_recording_commands() {
+        let (mut producer, mut consumer, mut state) = test_engine();
+        let track_id = state.tracks[0].id;
+        // Arm the track
+        producer
+            .push(EngineCommand::ArmTrack {
+                track_id,
+                armed: true,
+            })
+            .unwrap();
+        dispatch(&mut state);
+        // Start recording
+        producer.push(EngineCommand::StartRecording).unwrap();
+        dispatch(&mut state);
+        assert_eq!(state.transport.state(), TransportState::Recording);
+        // Drain events
+        while consumer.pop().is_ok() {}
+        // Stop recording
+        producer.push(EngineCommand::StopRecording).unwrap();
+        dispatch(&mut state);
+        assert_eq!(state.transport.state(), TransportState::Playing);
+    }
+
+    #[test]
+    fn unknown_track_id_is_ignored() {
+        let (mut producer, _, mut state) = test_engine();
+        let bogus_id = TrackId::new();
+        producer
+            .push(EngineCommand::SetTrackVolume {
+                track_id: bogus_id,
+                volume: 0.5,
+            })
+            .unwrap();
+        // Should not panic
+        dispatch(&mut state);
+    }
+}

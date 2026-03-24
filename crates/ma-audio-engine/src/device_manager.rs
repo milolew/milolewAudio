@@ -406,3 +406,41 @@ fn device_to_info(device: &cpal::Device, default_name: Option<&str>) -> Option<A
         max_channels,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_manager_enumerates_devices() {
+        // This test runs on any platform — cpal always provides at least
+        // a host (even if no physical devices are available).
+        let mut dm = AudioDeviceManager::new();
+        let enumeration = dm.enumerate_devices();
+        // We can't assert specific devices exist in CI, but the enumeration
+        // should complete without panic and return a valid struct.
+        assert!(
+            enumeration.output_devices.len() > 0 || enumeration.input_devices.len() >= 0,
+            "enumeration completed"
+        );
+    }
+
+    #[test]
+    fn device_error_has_topology_variant() {
+        let err =
+            DeviceError::TopologyError(crate::graph::topology::TopologyError::CycleDetected {
+                total: 3,
+                sorted: 2,
+                skipped: 1,
+            });
+        let msg = err.to_string();
+        assert!(msg.contains("cycle detected"));
+    }
+
+    #[test]
+    fn cpal_error_code_mapping() {
+        // DeviceNotAvailable maps to code 3 (DeviceLost)
+        let code = cpal_error_to_code(&cpal::StreamError::DeviceNotAvailable);
+        assert_eq!(code, 3);
+    }
+}

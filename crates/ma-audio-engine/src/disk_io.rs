@@ -257,3 +257,120 @@ pub fn recording_path(project_dir: &Path, track_id: TrackId, take_number: u32) -
         .join("recordings")
         .join(format!("{}_take_{:03}.wav", track_id.0, take_number))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recording_path_format() {
+        let track_id = TrackId::new();
+        let path = recording_path(Path::new("/tmp/project"), track_id, 3);
+        let expected = format!("/tmp/project/recordings/{}_take_003.wav", track_id.0);
+        assert_eq!(path.to_str().unwrap(), expected);
+    }
+
+    #[test]
+    fn disk_io_thread_start_stop() {
+        let (cmd_tx, evt_rx) = spawn_disk_io_thread();
+        cmd_tx.send(DiskCommand::Shutdown).unwrap();
+        // Thread should exit cleanly — verify by dropping the channel
+        drop(cmd_tx);
+        // Any remaining events should be empty (no active recordings)
+        assert!(evt_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn disk_io_records_and_finalizes() {
+        let (cmd_tx, evt_rx) = spawn_disk_io_thread();
+        let track_id = TrackId::new();
+
+        // Create a ring buffer and push some samples
+        let (mut producer, consumer) = rtrb::RingBuffer::new(4096);
+        let samples: Vec<f32> = (0..100).map(|i| i as f32 * 0.01).collect();
+        for &s in &samples {
+            producer.push(s).unwrap();
+        }
+
+        let output_path = std::env::temp_dir().join(format!("test_record_{}.wav", track_id.0));
+
+        // Start recording
+        cmd_tx
+            .send(DiskCommand::StartRecording {
+                track_id,
+                consumer,
+                output_path: output_path.clone(),
+                channels: 1,
+                sample_rate: 48000,
+            })
+            .unwrap();
+
+        // Give disk thread time to drain
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Stop recording
+        cmd_tx
+            .send(DiskCommand::StopRecording { track_id })
+            .unwrap();
+
+        // Give disk thread time to finalize
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Shutdown
+        cmd_tx.send(DiskCommand::Shutdown).unwrap();
+
+        // Check for RecordingComplete event
+        let mut found_complete = false;
+        while let Ok(event) = evt_rx.try_recv() {
+            if let DiskEvent::RecordingComplete {
+                track_id: tid,
+                total_samples,
+                ..
+            } = event
+            {
+                assert_eq!(tid, track_id);
+                assert_eq!(total_samples, 100);
+                found_complete = true;
+            }
+        }
+        assert!(found_complete, "Expected RecordingComplete event");
+
+        // Verify WAV file exists and has correct sample count
+        let reader = hound::WavReader::open(&output_path).unwrap();
+        assert_eq!(reader.len(), 100);
+        assert_eq!(reader.spec().channels, 1);
+        assert_eq!(reader.spec().sample_rate, 48000);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&output_path);
+    }
+
+    #[test]
+    fn disk_io_handles_create_error() {
+        let (cmd_tx, evt_rx) = spawn_disk_io_thread();
+        let track_id = TrackId::new();
+        let (_producer, consumer) = rtrb::RingBuffer::new(1024);
+
+        // Try to write to a non-existent directory
+        cmd_tx
+            .send(DiskCommand::StartRecording {
+                track_id,
+                consumer,
+                output_path: PathBuf::from("/nonexistent/path/test.wav"),
+                channels: 1,
+                sample_rate: 48000,
+            })
+            .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        cmd_tx.send(DiskCommand::Shutdown).unwrap();
+
+        let mut found_error = false;
+        while let Ok(event) = evt_rx.try_recv() {
+            if let DiskEvent::RecordingError { .. } = event {
+                found_error = true;
+            }
+        }
+        assert!(found_error, "Expected RecordingError event for bad path");
+    }
+}
