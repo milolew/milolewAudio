@@ -8,6 +8,15 @@
 //! UI displays Bars:Beats:Ticks. Audio engine works in samples.
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// Errors related to time and tempo calculations.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum TimeError {
+    /// The time signature has an invalid numerator or denominator (zero).
+    #[error("invalid time signature {numerator}/{denominator}: neither may be zero")]
+    InvalidTimeSignature { numerator: u8, denominator: u8 },
+}
 
 /// Musical time unit: pulses (ticks) relative to the project start.
 /// 960 ticks = 1 quarter note at any tempo.
@@ -88,13 +97,25 @@ pub struct BarBeatTick {
 impl BarBeatTick {
     /// Convert from absolute ticks to Bars:Beats:Ticks display format.
     ///
+    /// Returns `Err(TimeError::InvalidTimeSignature)` if `numerator` or `denominator` is zero.
+    ///
     /// # Arguments
     /// * `absolute_tick` - Position in ticks from project start
-    /// * `numerator` - Time signature numerator (e.g., 4 for 4/4)
-    /// * `denominator` - Time signature denominator (e.g., 4 for 4/4)
-    pub fn from_ticks(absolute_tick: Tick, numerator: u8, denominator: u8) -> Self {
-        let denominator = (denominator as Tick).max(1);
-        let numerator = (numerator as Tick).max(1);
+    /// * `numerator` - Time signature numerator (e.g., 4 for 4/4), must be > 0
+    /// * `denominator` - Time signature denominator (e.g., 4 for 4/4), must be > 0
+    pub fn from_ticks(
+        absolute_tick: Tick,
+        numerator: u8,
+        denominator: u8,
+    ) -> Result<Self, TimeError> {
+        if numerator == 0 || denominator == 0 {
+            return Err(TimeError::InvalidTimeSignature {
+                numerator,
+                denominator,
+            });
+        }
+        let denominator = denominator as Tick;
+        let numerator = numerator as Tick;
         let ticks_per_beat = PPQN * 4 / denominator;
         let ticks_per_bar = ticks_per_beat * numerator;
 
@@ -104,11 +125,27 @@ impl BarBeatTick {
         let beat = (remaining / ticks_per_beat) as u8 + 1; // 1-indexed
         let sub_tick = (remaining % ticks_per_beat) as u16;
 
-        Self {
+        Ok(Self {
             bar,
             beat,
             tick: sub_tick,
-        }
+        })
+    }
+
+    /// Convert from absolute ticks, clamping invalid time signature values to 1.
+    ///
+    /// This is a backwards-compatible wrapper around [`BarBeatTick::from_ticks`].
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use from_ticks() which returns Result<BarBeatTick, TimeError>"
+    )]
+    pub fn from_ticks_clamped(absolute_tick: Tick, numerator: u8, denominator: u8) -> Self {
+        Self::from_ticks(
+            absolute_tick,
+            numerator.max(1),
+            denominator.max(1),
+        )
+        .expect("clamped values are always valid")
     }
 }
 
@@ -146,7 +183,7 @@ mod tests {
     #[test]
     fn bar_beat_tick_4_4_time() {
         // Tick 0 = Bar 1, Beat 1, Tick 0
-        let bbt = BarBeatTick::from_ticks(0, 4, 4);
+        let bbt = BarBeatTick::from_ticks(0, 4, 4).unwrap();
         assert_eq!(
             bbt,
             BarBeatTick {
@@ -157,7 +194,7 @@ mod tests {
         );
 
         // Tick 960 = Bar 1, Beat 2, Tick 0
-        let bbt = BarBeatTick::from_ticks(960, 4, 4);
+        let bbt = BarBeatTick::from_ticks(960, 4, 4).unwrap();
         assert_eq!(
             bbt,
             BarBeatTick {
@@ -168,7 +205,7 @@ mod tests {
         );
 
         // Tick 3840 = Bar 2, Beat 1, Tick 0 (4 beats × 960 = 3840)
-        let bbt = BarBeatTick::from_ticks(3840, 4, 4);
+        let bbt = BarBeatTick::from_ticks(3840, 4, 4).unwrap();
         assert_eq!(
             bbt,
             BarBeatTick {
@@ -198,23 +235,45 @@ mod tests {
     }
 
     #[test]
-    fn bar_beat_tick_zero_denominator_clamped() {
-        // Should not panic — denominator clamped to 1
-        let bbt = BarBeatTick::from_ticks(0, 4, 0);
-        assert_eq!(bbt.bar, 1);
+    fn bar_beat_tick_zero_denominator_returns_error() {
+        let result = BarBeatTick::from_ticks(0, 4, 0);
+        assert_eq!(
+            result,
+            Err(TimeError::InvalidTimeSignature {
+                numerator: 4,
+                denominator: 0
+            })
+        );
     }
 
     #[test]
-    fn bar_beat_tick_zero_numerator_clamped() {
-        // Should not panic — numerator clamped to 1
-        let bbt = BarBeatTick::from_ticks(0, 0, 4);
-        assert_eq!(bbt.bar, 1);
+    fn bar_beat_tick_zero_numerator_returns_error() {
+        let result = BarBeatTick::from_ticks(0, 0, 4);
+        assert_eq!(
+            result,
+            Err(TimeError::InvalidTimeSignature {
+                numerator: 0,
+                denominator: 4
+            })
+        );
+    }
+
+    #[test]
+    fn bar_beat_tick_both_zero_returns_error() {
+        let result = BarBeatTick::from_ticks(0, 0, 0);
+        assert_eq!(
+            result,
+            Err(TimeError::InvalidTimeSignature {
+                numerator: 0,
+                denominator: 0
+            })
+        );
     }
 
     #[test]
     fn bar_beat_tick_3_4_time() {
         // In 3/4: bar = 3 beats × 960 ticks = 2880 ticks
-        let bbt = BarBeatTick::from_ticks(2880, 3, 4);
+        let bbt = BarBeatTick::from_ticks(2880, 3, 4).unwrap();
         assert_eq!(
             bbt,
             BarBeatTick {

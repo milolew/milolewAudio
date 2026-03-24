@@ -20,4 +20,4 @@ pub use commands::{EngineCommand, TopologyCommand};
 pub use events::EngineEvent;
 pub use ids::{ClipId, NodeId, TrackId};
 pub use parameters::{TrackConfig, TransportState};
-pub use time::{FrameCount, SamplePos, Tick, PPQN};
+pub use time::{FrameCount, SamplePos, Tick, TimeError, PPQN};
