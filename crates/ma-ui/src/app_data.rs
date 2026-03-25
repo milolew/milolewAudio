@@ -708,8 +708,8 @@ impl AppData {
                     id: track.id,
                     name: track.name.clone(),
                     kind: match track.kind {
-                        TrackKind::Audio => "audio".into(),
-                        TrackKind::Midi => "midi".into(),
+                        TrackKind::Audio => TrackKindFile::Audio,
+                        TrackKind::Midi => TrackKindFile::Midi,
                     },
                     color: track.color,
                     volume: track.volume,
@@ -720,6 +720,11 @@ impl AppData {
             })
             .collect();
 
+        let sample_rate = match &self.engine {
+            EngineMode::Real { bridge, .. } => bridge.sample_rate(),
+            EngineMode::Mock { .. } => 48000,
+        };
+
         let project = ProjectFile {
             version: PROJECT_VERSION,
             name: path
@@ -727,7 +732,7 @@ impl AppData {
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "Untitled".into()),
             tempo: self.transport.tempo,
-            sample_rate: 48000,
+            sample_rate,
             tracks,
         };
 
@@ -751,9 +756,9 @@ impl AppData {
         let mut next_note_id = 1000u64;
 
         for track_file in &project.tracks {
-            let kind = match track_file.kind.as_str() {
-                "audio" => TrackKind::Audio,
-                _ => TrackKind::Midi,
+            let kind = match track_file.kind {
+                TrackKindFile::Audio => TrackKind::Audio,
+                TrackKindFile::Midi => TrackKind::Midi,
             };
 
             self.tracks.push(TrackState {
@@ -785,10 +790,24 @@ impl AppData {
                     })
                     .collect();
 
-                // Resolve audio file path
-                let audio_file_abs = clip_file.audio_file.as_ref().map(|rel| {
+                // Resolve audio file path with traversal protection
+                let audio_file_abs = clip_file.audio_file.as_ref().and_then(|rel| {
+                    // Reject paths containing ".." to prevent directory traversal
+                    if rel.contains("..") {
+                        log::warn!("Audio file path contains '..', skipping: {rel}");
+                        return None;
+                    }
                     let resolved = project_dir.join(rel);
-                    resolved.to_string_lossy().to_string()
+                    // If file exists, verify it stays within project directory
+                    if let (Ok(canonical_dir), Ok(canonical_file)) =
+                        (project_dir.canonicalize(), resolved.canonicalize())
+                    {
+                        if !canonical_file.starts_with(&canonical_dir) {
+                            log::warn!("Audio file path escapes project directory: {rel}");
+                            return None;
+                        }
+                    }
+                    Some(resolved.to_string_lossy().to_string())
                 });
 
                 // Load audio data if present
@@ -883,6 +902,46 @@ impl AppData {
             })
             .collect();
 
+        // Collect MIDI clips for export
+        let midi_clips: Vec<ExportMidiClip> = self
+            .clips
+            .iter()
+            .filter(|c| !c.notes.is_empty())
+            .map(|clip| {
+                let events: Vec<ma_core::parameters::MidiEvent> = clip
+                    .notes
+                    .iter()
+                    .flat_map(|n| {
+                        vec![
+                            ma_core::parameters::MidiEvent {
+                                tick: n.start_tick,
+                                message: ma_core::parameters::MidiMessage::NoteOn {
+                                    channel: n.channel,
+                                    note: n.pitch,
+                                    velocity: n.velocity,
+                                },
+                            },
+                            ma_core::parameters::MidiEvent {
+                                tick: n.start_tick + n.duration_ticks,
+                                message: ma_core::parameters::MidiMessage::NoteOff {
+                                    channel: n.channel,
+                                    note: n.pitch,
+                                    velocity: 0,
+                                },
+                            },
+                        ]
+                    })
+                    .collect();
+                let duration = clip.duration_ticks;
+                ExportMidiClip {
+                    track_id: clip.track_id,
+                    clip_id: clip.id,
+                    clip: Arc::new(ma_core::MidiClip::new(events, duration)),
+                    start_tick: clip.start_tick,
+                }
+            })
+            .collect();
+
         // Find total duration in samples
         let max_tick = self
             .clips
@@ -904,9 +963,18 @@ impl AppData {
         };
 
         let path = path.to_path_buf();
+        log::info!("Export started: {}", path.display());
         // Run export on background thread to avoid blocking UI
+        // NOTE: JoinHandle is dropped — no UI feedback on completion yet (known limitation)
         std::thread::spawn(move || {
-            match offline_render(engine_config, &clips, total_samples, &path, &export_config) {
+            match offline_render(
+                engine_config,
+                &clips,
+                &midi_clips,
+                total_samples,
+                &path,
+                &export_config,
+            ) {
                 Ok(()) => log::info!("Export complete: {}", path.display()),
                 Err(e) => log::error!("Export failed: {e}"),
             }

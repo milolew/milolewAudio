@@ -16,7 +16,10 @@ use ma_core::commands::EngineCommand;
 use ma_core::ids::{ClipId, TrackId};
 use ma_core::midi_clip::MidiClip;
 use ma_core::parameters::{MidiEvent, MidiMessage, TrackConfig, TrackType, TransportState};
-use ma_core::project_file::*;
+use ma_core::project_file::{
+    load_project, save_project, ClipFile, NoteFile, ProjectFile, TrackFile, TrackKindFile,
+    PROJECT_VERSION,
+};
 use ma_core::time::SamplePos;
 
 /// Generate a stereo sine wave clip (non-interleaved).
@@ -218,6 +221,7 @@ fn export_produces_valid_wav() {
     offline_render(
         config,
         &clips,
+        &[],
         duration as u64,
         &output_path,
         &export_config,
@@ -267,7 +271,7 @@ fn project_save_load_roundtrip() {
             TrackFile {
                 id: track1_id,
                 name: "Melody".into(),
-                kind: "midi".into(),
+                kind: TrackKindFile::Midi,
                 color: [100, 160, 255],
                 volume: 0.8,
                 pan: 0.0,
@@ -308,7 +312,7 @@ fn project_save_load_roundtrip() {
             TrackFile {
                 id: track2_id,
                 name: "Drums".into(),
-                kind: "audio".into(),
+                kind: TrackKindFile::Audio,
                 color: [80, 220, 120],
                 volume: 1.0,
                 pan: -0.2,
@@ -346,7 +350,7 @@ fn project_save_load_roundtrip() {
     let t1 = &loaded.tracks[0];
     assert_eq!(t1.id, track1_id);
     assert_eq!(t1.name, "Melody");
-    assert_eq!(t1.kind, "midi");
+    assert_eq!(t1.kind, TrackKindFile::Midi);
     assert_eq!(t1.color, [100, 160, 255]);
     assert!((t1.volume - 0.8).abs() < f32::EPSILON);
     assert_eq!(t1.clips.len(), 1);
@@ -365,7 +369,7 @@ fn project_save_load_roundtrip() {
     // Track 2 (Audio)
     let t2 = &loaded.tracks[1];
     assert_eq!(t2.id, track2_id);
-    assert_eq!(t2.kind, "audio");
+    assert_eq!(t2.kind, TrackKindFile::Audio);
     assert!((t2.pan - (-0.2)).abs() < f32::EPSILON);
     assert_eq!(t2.clips[0].audio_file, Some("audio/drums.wav".into()));
     assert_eq!(t2.clips[0].audio_length_samples, Some(48000));

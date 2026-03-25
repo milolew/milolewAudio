@@ -26,33 +26,20 @@ pub struct DecodedAudio {
 }
 
 /// Errors that can occur during audio decoding.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AudioDecodeError {
     /// File could not be opened or read.
-    Io(std::io::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
     /// Format could not be probed or is unsupported.
+    #[error("unsupported format: {0}")]
     UnsupportedFormat(String),
     /// No audio track found in the file.
+    #[error("no audio track found")]
     NoAudioTrack,
     /// Decoder error during sample extraction.
+    #[error("decode error: {0}")]
     Decode(String),
-}
-
-impl std::fmt::Display for AudioDecodeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "I/O error: {e}"),
-            Self::UnsupportedFormat(msg) => write!(f, "unsupported format: {msg}"),
-            Self::NoAudioTrack => write!(f, "no audio track found"),
-            Self::Decode(msg) => write!(f, "decode error: {msg}"),
-        }
-    }
-}
-
-impl From<std::io::Error> for AudioDecodeError {
-    fn from(e: std::io::Error) -> Self {
-        Self::Io(e)
-    }
 }
 
 /// Decode an audio file to non-interleaved f32 samples.
@@ -88,8 +75,15 @@ pub fn decode_audio_file(path: &Path) -> Result<DecodedAudio, AudioDecodeError> 
     let codec_params = track.codec_params.clone();
     let track_id = track.id;
 
-    let channels = codec_params.channels.map(|c| c.count()).unwrap_or(2);
-    let sample_rate = codec_params.sample_rate.unwrap_or(48000);
+    let channels = codec_params
+        .channels
+        .map(|c| c.count())
+        .ok_or(AudioDecodeError::Decode(
+            "missing channel info in codec params".into(),
+        ))?;
+    let sample_rate = codec_params.sample_rate.ok_or(AudioDecodeError::Decode(
+        "missing sample rate in codec params".into(),
+    ))?;
 
     let mut decoder = symphonia::default::get_codecs()
         .make(&codec_params, &DecoderOptions::default())
@@ -97,6 +91,7 @@ pub fn decode_audio_file(path: &Path) -> Result<DecodedAudio, AudioDecodeError> 
 
     // Collect interleaved samples first, then convert to non-interleaved
     let mut interleaved: Vec<f32> = Vec::new();
+    let mut sample_buf: Option<SampleBuffer<f32>> = None;
 
     loop {
         let packet = match format_reader.next_packet() {
@@ -125,10 +120,17 @@ pub fn decode_audio_file(path: &Path) -> Result<DecodedAudio, AudioDecodeError> 
         let spec = *decoded.spec();
         let num_frames = decoded.capacity();
 
-        let mut sample_buf = SampleBuffer::<f32>::new(num_frames as u64, spec);
-        sample_buf.copy_interleaved_ref(decoded);
+        // Reuse SampleBuffer across packets; only reallocate if capacity is insufficient
+        let buf = match &mut sample_buf {
+            Some(buf) if buf.capacity() >= num_frames => buf,
+            _ => {
+                sample_buf = Some(SampleBuffer::<f32>::new(num_frames as u64, spec));
+                sample_buf.as_mut().unwrap()
+            }
+        };
+        buf.copy_interleaved_ref(decoded);
 
-        interleaved.extend_from_slice(sample_buf.samples());
+        interleaved.extend_from_slice(buf.samples());
     }
 
     let total_frames = interleaved.len() / channels.max(1);

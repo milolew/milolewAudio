@@ -4,6 +4,7 @@
 //! (faster than real-time), and writes the output to disk via hound.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use hound::{SampleFormat, WavSpec, WavWriter};
 
@@ -13,8 +14,9 @@ use crate::graph::node::ProcessContext;
 use crate::graph::nodes::output_node::OutputNode;
 use crate::graph::nodes::wav_player::AudioClipRef;
 use ma_core::ids::{ClipId, TrackId};
+use ma_core::midi_clip::MidiClip;
 use ma_core::parameters::TransportState;
-use ma_core::time::SamplePos;
+use ma_core::time::{SamplePos, Tick};
 
 /// Bit depth for exported audio.
 #[derive(Debug, Clone, Copy)]
@@ -42,40 +44,35 @@ impl Default for ExportConfig {
 }
 
 /// Errors that can occur during export.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ExportError {
     /// Audio graph could not be built.
+    #[error("graph build error: {0}")]
     GraphBuild(String),
     /// WAV file could not be written.
-    Io(std::io::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
     /// Hound writer error.
+    #[error("WAV error: {0}")]
     Wav(String),
 }
 
-impl std::fmt::Display for ExportError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::GraphBuild(msg) => write!(f, "graph build error: {msg}"),
-            Self::Io(e) => write!(f, "I/O error: {e}"),
-            Self::Wav(msg) => write!(f, "WAV error: {msg}"),
-        }
-    }
-}
-
-impl From<std::io::Error> for ExportError {
-    fn from(e: std::io::Error) -> Self {
-        Self::Io(e)
-    }
-}
-
-/// A clip to be loaded into the export engine.
+/// An audio clip to be loaded into the export engine.
 pub struct ExportClip {
     pub track_id: TrackId,
     pub clip_id: ClipId,
-    pub data: std::sync::Arc<[f32]>,
+    pub data: Arc<[f32]>,
     pub channels: usize,
     pub start_sample: SamplePos,
     pub length_samples: SamplePos,
+}
+
+/// A MIDI clip to be loaded into the export engine.
+pub struct ExportMidiClip {
+    pub track_id: TrackId,
+    pub clip_id: ClipId,
+    pub clip: Arc<MidiClip>,
+    pub start_tick: Tick,
 }
 
 /// Render the audio graph offline and write to a WAV file.
@@ -86,12 +83,14 @@ pub struct ExportClip {
 /// # Arguments
 /// * `engine_config` — engine setup (sample rate, buffer size, tracks)
 /// * `clips` — audio clips to load before rendering
+/// * `midi_clips` — MIDI clips to load before rendering
 /// * `total_samples` — total duration to render in samples
 /// * `output_path` — destination WAV file
 /// * `export_config` — bit depth and sample rate
 pub fn offline_render(
     engine_config: EngineConfig,
     clips: &[ExportClip],
+    midi_clips: &[ExportMidiClip],
     total_samples: u64,
     output_path: &Path,
     export_config: &ExportConfig,
@@ -99,9 +98,14 @@ pub fn offline_render(
     let (mut state, _handle) =
         build_engine(engine_config).map_err(|e| ExportError::GraphBuild(e.to_string()))?;
 
-    // Load clips into the appropriate WavPlayerNodes
+    // Load audio clips into WavPlayerNodes
     for clip in clips {
         load_clip_into_graph(&mut state, clip);
+    }
+
+    // Load MIDI clips into MidiPlayerNodes
+    for midi_clip in midi_clips {
+        load_midi_clip_into_graph(&mut state, midi_clip);
     }
 
     // Start transport
@@ -187,13 +191,13 @@ pub fn offline_render(
     Ok(())
 }
 
-/// Load a clip into the appropriate WavPlayerNode in the graph.
+/// Load an audio clip into the appropriate WavPlayerNode in the graph.
 fn load_clip_into_graph(state: &mut CallbackState, clip: &ExportClip) {
-    let track = state.tracks.iter().find(|t| t.id == clip.track_id);
-    let player_idx = match track {
-        Some(t) => t.player_node_graph_index,
-        None => return,
-    };
+    let player_idx = state
+        .tracks
+        .iter()
+        .find(|t| t.id == clip.track_id)
+        .and_then(|t| t.player_node_graph_index);
 
     if let Some(idx) = player_idx {
         if let Some(wav_player) = state
@@ -202,10 +206,32 @@ fn load_clip_into_graph(state: &mut CallbackState, clip: &ExportClip) {
         {
             wav_player.add_clip(AudioClipRef {
                 clip_id: clip.clip_id,
-                data: std::sync::Arc::clone(&clip.data),
+                data: Arc::clone(&clip.data),
                 channels: clip.channels,
                 start_sample: clip.start_sample,
                 length_samples: clip.length_samples,
+            });
+        }
+    }
+}
+
+/// Load a MIDI clip into the appropriate MidiPlayerNode in the graph.
+fn load_midi_clip_into_graph(state: &mut CallbackState, clip: &ExportMidiClip) {
+    let player_idx = state
+        .tracks
+        .iter()
+        .find(|t| t.id == clip.track_id)
+        .and_then(|t| t.player_node_graph_index);
+
+    if let Some(idx) = player_idx {
+        if let Some(midi_player) = state
+            .graph
+            .node_downcast_mut::<crate::graph::nodes::midi_player::MidiPlayerNode>(idx)
+        {
+            midi_player.add_clip(ma_core::midi_clip::MidiClipRef {
+                clip_id: clip.clip_id,
+                clip: Arc::clone(&clip.clip),
+                start_tick: clip.start_tick,
             });
         }
     }
@@ -218,7 +244,14 @@ struct DitherState {
 
 impl DitherState {
     fn new() -> Self {
-        Self { state: 0x12345678 }
+        // Seed from system time so each export has unique dither noise
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u32)
+            .unwrap_or(0x12345678);
+        Self {
+            state: seed.max(1), // xorshift requires non-zero state
+        }
     }
 
     fn next_u32(&mut self) -> u32 {
@@ -301,6 +334,7 @@ mod tests {
         offline_render(
             config,
             &clips,
+            &[],
             duration as u64,
             &output_path,
             &export_config,
@@ -365,6 +399,7 @@ mod tests {
         offline_render(
             config,
             &clips,
+            &[],
             duration as u64,
             &output_path,
             &export_config,

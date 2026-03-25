@@ -20,13 +20,20 @@ pub struct ProjectFile {
     pub tracks: Vec<TrackFile>,
 }
 
+/// Track kind discriminator for project files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrackKindFile {
+    Audio,
+    Midi,
+}
+
 /// A track in the project file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackFile {
     pub id: TrackId,
     pub name: String,
-    /// "audio" or "midi"
-    pub kind: String,
+    pub kind: TrackKindFile,
     pub color: [u8; 3],
     pub volume: f32,
     pub pan: f32,
@@ -62,35 +69,14 @@ pub struct NoteFile {
 }
 
 /// Errors that can occur during project file operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ProjectError {
-    Io(std::io::Error),
-    Json(serde_json::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("version mismatch: file version {found} is newer than supported {expected}")]
     VersionMismatch { expected: u32, found: u32 },
-}
-
-impl std::fmt::Display for ProjectError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "I/O error: {e}"),
-            Self::Json(e) => write!(f, "JSON error: {e}"),
-            Self::VersionMismatch { expected, found } => {
-                write!(f, "version mismatch: expected {expected}, found {found}")
-            }
-        }
-    }
-}
-
-impl From<std::io::Error> for ProjectError {
-    fn from(e: std::io::Error) -> Self {
-        Self::Io(e)
-    }
-}
-
-impl From<serde_json::Error> for ProjectError {
-    fn from(e: serde_json::Error) -> Self {
-        Self::Json(e)
-    }
 }
 
 /// Save a project to a JSON file.
@@ -102,12 +88,15 @@ pub fn save_project(project: &ProjectFile, path: &Path) -> Result<(), ProjectErr
 }
 
 /// Load a project from a JSON file.
+///
+/// Accepts files with version <= `PROJECT_VERSION` (forward compatible).
+/// Rejects files with version > `PROJECT_VERSION` (from a newer app version).
 pub fn load_project(path: &Path) -> Result<ProjectFile, ProjectError> {
     let file = std::fs::File::open(path)?;
     let reader = std::io::BufReader::new(file);
     let project: ProjectFile = serde_json::from_reader(reader)?;
 
-    if project.version != PROJECT_VERSION {
+    if project.version > PROJECT_VERSION {
         return Err(ProjectError::VersionMismatch {
             expected: PROJECT_VERSION,
             found: project.version,
@@ -132,7 +121,7 @@ mod tests {
                 TrackFile {
                     id: TrackId::new(),
                     name: "MIDI Track".into(),
-                    kind: "midi".into(),
+                    kind: TrackKindFile::Midi,
                     color: [100, 160, 255],
                     volume: 0.8,
                     pan: 0.0,
@@ -166,7 +155,7 @@ mod tests {
                 TrackFile {
                     id: TrackId::new(),
                     name: "Audio Track".into(),
-                    kind: "audio".into(),
+                    kind: TrackKindFile::Audio,
                     color: [80, 220, 120],
                     volume: 1.0,
                     pan: -0.3,
@@ -201,13 +190,13 @@ mod tests {
         assert_eq!(loaded.tracks.len(), 2);
 
         let midi_track = &loaded.tracks[0];
-        assert_eq!(midi_track.kind, "midi");
+        assert_eq!(midi_track.kind, TrackKindFile::Midi);
         assert_eq!(midi_track.clips.len(), 1);
         assert_eq!(midi_track.clips[0].notes.len(), 2);
         assert_eq!(midi_track.clips[0].notes[0].pitch, 60);
 
         let audio_track = &loaded.tracks[1];
-        assert_eq!(audio_track.kind, "audio");
+        assert_eq!(audio_track.kind, TrackKindFile::Audio);
         assert_eq!(
             audio_track.clips[0].audio_file,
             Some("audio/drums.wav".into())
@@ -217,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn version_mismatch_error() {
+    fn version_from_future_rejected() {
         let mut project = test_project();
         project.version = 999;
 
@@ -232,6 +221,21 @@ mod tests {
                 found: 999
             })
         ));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn version_from_past_accepted() {
+        // Version 0 (older than current 1) should load fine
+        let mut project = test_project();
+        project.version = 0;
+
+        let path = std::env::temp_dir().join("test_project_version_old.json");
+        save_project(&project, &path).unwrap();
+
+        let loaded = load_project(&path).unwrap();
+        assert_eq!(loaded.version, 0);
 
         std::fs::remove_file(&path).ok();
     }
@@ -252,7 +256,7 @@ mod tests {
             tracks: vec![TrackFile {
                 id: TrackId::new(),
                 name: "T1".into(),
-                kind: "midi".into(),
+                kind: TrackKindFile::Midi,
                 color: [100, 100, 100],
                 volume: 1.0,
                 pan: 0.0,
