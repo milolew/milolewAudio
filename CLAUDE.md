@@ -29,14 +29,15 @@ Jeśli cokolwiek nie przechodzi — napraw ZANIM commitujesz.
 - `assert_no_alloc` w debug buildach na audio callback
 
 ## Ownership plików per worktree
-Jeśli pracujesz w worktree, dotykaj WYŁĄCZNIE swoich plików:
 
 | Worktree branch | Scope plików | Nie dotykaj |
 |---|---|---|
-| `fix/engine-safety` | `crates/ma-audio-engine/**` | ma-core, ma-ui |
-| `fix/ui-architecture` | `crates/ma-ui/**` POZA views/arrangement_view.rs | ma-core, ma-audio-engine, arrangement_view.rs |
-| `feat/ui-views` | `crates/ma-ui/src/views/**`, `widgets/**` | ma-core, ma-audio-engine, app_data.rs, bridge/ |
-| `feat/integration` | nowe pliki we WSZYSTKICH crate'ach | istniejące pliki — minimalne zmiany |
+| `feat/undo-system` | `ma-core/src/undo.rs` (nowy) + `ma-ui/src/app_data/` | views/, widgets/, ma-audio-engine |
+| `feat/clip-operations` | `ma-ui/src/views/arrangement/` + nowe pliki clip_interaction.rs, snap.rs, clipboard.rs | ma-core, ma-audio-engine, piano_roll, device_rack, mixer, browser |
+| `feat/track-management` | `ma-audio-engine/src/engine.rs`, `command_processor.rs`, nowy `metronome.rs` + `ma-ui/src/views/arrangement/mod.rs` (track header), `transport_bar.rs` | piano_roll, device_rack, browser, clip_renderer |
+| `feat/keyboard-shortcuts` | `ma-ui/src/keyboard.rs` (nowy) + `ma-ui/src/views/piano_roll_view.rs` (quantize/transpose) | ma-audio-engine, arrangement/clip_renderer, browser, device_rack |
+| `feat/recording-flow` | `ma-ui/src/views/arrangement/mod.rs` (loop/scroll) + `ma-ui/src/app_data/dispatch.rs` (record events) + `ma-audio-engine/` (monitoring routing) | piano_roll, device_rack, browser |
+| `feat/polish` | cross-crate — QoL features | — (final cleanup) |
 
 Jeśli musisz zmienić publiczne API innego crate'a (np. dodać wariant do enum w ma-core) — dodaj go z `#[non_exhaustive]` i zadokumentuj w commit message.
 
@@ -47,30 +48,30 @@ cat .claude/worktree-briefs/$(git branch --show-current | sed 's|.*/||').md
 ```
 Jeśli plik nie istnieje, zapytaj użytkownika o zakres pracy.
 
-## Aktywne issues (19)
-### CRITICAL
-- E1: topology.rs — unsafe ptr arithmetic z debug_assert bounds
-- E2: 31 sites — Relaxed atomic ordering na cross-thread state
+## Aktywne issues (8) + Feature gaps (37)
 
-### HIGH
-- E3: callback.rs — 8x silent ring buffer overflow (brak counter)
-- E4: topology.rs — cycle detection zwraca partial schedule
-- E6: disk_io.rs — silent WAV truncation na disk error
-- E7: command_processor, disk_io, device_manager — zero testów
-- N1: callback.rs — brak catch_unwind na audio thread
-- N2: device_manager.rs — cpal errors nie propagowane do UI
-- U1: app_data.rs (765 linii) — god object
-- U5: arrangement_view.rs — 281-liniowy monolityczny draw
-- U6: views/, widgets/ — zero test coverage
+### Issues (tech debt)
+- U1 HIGH: app_data.rs (1345 linii) — god object
+- U6 HIGH: most views/widgets — partial test coverage
+- E8 MEDIUM: recording overflow — no E2E test
+- U4 MEDIUM: O(n) Vec lookup 60fps
+- U8 MEDIUM: ring buffer unmonitored
+- U12 MEDIUM: 133 linii inline demo data
+- U10 LOW: inconsistent redraw patterns
+- U11 LOW: dead code clips_for_track()
 
-### MEDIUM
-- E5: input_capture.rs — brak overflow counter
-- E8: recording path — brak E2E test
-- U4: app_data.rs — O(n) Vec lookup 60fps
-- U7: transport_bar.rs — format!() w render loop
-- U8: engine.rs — ring buffer hard-coded, brak monitoring
-- U12: app_data.rs — 115 linii inline demo data
+### Feature gaps P0 (BLOCKER)
+- Undo/Redo system — brak jakiegokolwiek undo
 
-### LOW
-- U10: inconsistent cx.needs_redraw() patterns
-- U11: dead code clips_for_track()
+### Feature gaps P1 (core workflow — 35 items)
+- Clip operations: move, resize, split, duplicate, delete, copy/paste, multi-select
+- Track management: add/remove/rename runtime, record arm GUI
+- Arrangement: snap grid, selection system, rubber band select
+- Recording: arm+record→clip appears, loop region drag, follow playhead, input monitoring
+- Piano roll: quantize, transpose, velocity drag, select all, snap selector
+- Metronome click audio
+- Keyboard shortcuts: Space, R, Ctrl+Z, Ctrl+S, Ctrl+E, Ctrl+D, Delete, Ctrl+T, +/-
+- Mute/Solo sync z engine
+
+### Resolved (20 issues cumulative)
+E1, E2, E3, E4, E5, E6, E7, N1, N2 (bac607f) | U5 (58bd185) | U7 (4a43bdc) | C1-C6, U2, U3, U9 (prior)
