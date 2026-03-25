@@ -3,12 +3,16 @@
 //! Owns all state and the engine bridge. Handles all events from views/widgets
 //! and routes commands to the audio engine via lock-free ring buffers.
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use vizia::prelude::*;
 
 use ma_audio_engine::device_manager::AudioDeviceManager;
 use ma_audio_engine::engine::EngineConfig;
+use ma_audio_engine::peak_cache::PeakCache;
 use ma_core::commands::EngineCommand as CoreCommand;
 use ma_core::device::AudioDeviceConfig;
 
@@ -25,7 +29,7 @@ use crate::state::piano_roll_state::PianoRollState;
 use crate::state::transport_state::TransportState;
 use crate::types::midi::{Note, NoteId};
 use crate::types::time::{QuantizeGrid, Tick, PPQN};
-use crate::types::track::{ClipId, ClipState, TrackId, TrackState};
+use crate::types::track::{ClipId, ClipState, TrackId, TrackKind, TrackState};
 
 /// Which main view is currently active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Data)]
@@ -34,6 +38,13 @@ pub enum ActiveView {
     Mixer,
     PianoRoll,
     Browser,
+}
+
+/// Bit depth for audio export.
+#[derive(Debug, Clone, Copy)]
+pub enum ExportBitDepth {
+    Sixteen,
+    ThirtyTwoFloat,
 }
 
 /// Root application data — the single vizia Model.
@@ -59,6 +70,14 @@ pub struct AppData {
     /// Pre-allocated buffer for engine responses — reused each frame to avoid allocation.
     #[lens(ignore)]
     response_buf: Vec<EngineResponse>,
+
+    /// Peak caches for audio clips (for waveform rendering).
+    #[lens(ignore)]
+    pub audio_peaks: HashMap<ClipId, Arc<PeakCache>>,
+
+    /// Audio data references — keeps Arc<[f32]> alive so the engine can read them.
+    #[lens(ignore)]
+    audio_data: HashMap<ClipId, Arc<[f32]>>,
 }
 
 /// Engine connection mode.
@@ -145,6 +164,15 @@ pub enum AppEvent {
     ScrollPianoRollY(i8),
     ZoomPianoRoll(f64),
 
+    // -- Project --
+    SaveProject(PathBuf),
+    LoadProject(PathBuf),
+    ExportProject {
+        path: PathBuf,
+        sample_rate: u32,
+        bit_depth: ExportBitDepth,
+    },
+
     // -- Browser --
     BrowserRefresh,
     BrowserGoUp,
@@ -218,6 +246,9 @@ impl AppData {
                         channel: 0,
                     },
                 ],
+                audio_file: None,
+                audio_length_samples: None,
+                audio_sample_rate: None,
             },
             ClipState {
                 id: ClipId(demo_id(2)),
@@ -243,6 +274,9 @@ impl AppData {
                         channel: 0,
                     },
                 ],
+                audio_file: None,
+                audio_length_samples: None,
+                audio_sample_rate: None,
             },
             ClipState {
                 id: ClipId(demo_id(3)),
@@ -251,6 +285,9 @@ impl AppData {
                 duration_ticks: PPQN * 16,
                 name: "Drum Loop".into(),
                 notes: Vec::new(),
+                audio_file: None,
+                audio_length_samples: None,
+                audio_sample_rate: None,
             },
             ClipState {
                 id: ClipId(demo_id(4)),
@@ -284,6 +321,9 @@ impl AppData {
                         channel: 0,
                     },
                 ],
+                audio_file: None,
+                audio_length_samples: None,
+                audio_sample_rate: None,
             },
         ];
 
@@ -351,6 +391,8 @@ impl AppData {
             show_preferences: false,
             engine,
             response_buf: Vec::with_capacity(64),
+            audio_peaks: HashMap::new(),
+            audio_data: HashMap::new(),
         }
     }
 
@@ -435,6 +477,87 @@ impl AppData {
         }
     }
 
+    // -- Audio file loading --
+
+    /// Load decoded audio into the selected (or first Audio) track.
+    fn load_audio_clip_into_track(
+        &mut self,
+        decoded: ma_audio_engine::audio_decode::DecodedAudio,
+        name: &str,
+        source_path: &std::path::Path,
+    ) {
+        // Find target track: selected track if Audio, else first Audio track
+        let track_id = self
+            .arrangement
+            .selected_track
+            .and_then(|id| {
+                self.tracks
+                    .iter()
+                    .find(|t| t.id == id && t.kind == TrackKind::Audio)
+            })
+            .or_else(|| self.tracks.iter().find(|t| t.kind == TrackKind::Audio))
+            .map(|t| t.id);
+
+        let track_id = match track_id {
+            Some(id) => id,
+            None => {
+                log::warn!("No audio track available — cannot load clip");
+                return;
+            }
+        };
+
+        let clip_id = ClipId::new();
+        let data: Arc<[f32]> = Arc::from(decoded.samples.into_boxed_slice());
+
+        // Build peak cache
+        let peak_cache = ma_audio_engine::peak_cache::build_peak_cache(
+            &data,
+            decoded.channels,
+            decoded.length_samples,
+        );
+
+        // Convert sample length to ticks
+        let tempo = self.transport.tempo;
+        let sample_rate = decoded.sample_rate as f64;
+        let length_seconds = decoded.length_samples as f64 / sample_rate;
+        let length_ticks = (length_seconds * tempo / 60.0 * PPQN as f64) as i64;
+
+        let clip_state = ClipState {
+            id: clip_id,
+            track_id,
+            start_tick: 0,
+            duration_ticks: length_ticks.max(1),
+            name: name.to_string(),
+            notes: Vec::new(),
+            audio_file: Some(source_path.to_string_lossy().to_string()),
+            audio_length_samples: Some(decoded.length_samples),
+            audio_sample_rate: Some(decoded.sample_rate),
+        };
+
+        self.clips.push(clip_state);
+        self.audio_peaks.insert(clip_id, Arc::new(peak_cache));
+        self.audio_data.insert(clip_id, Arc::clone(&data));
+
+        // Send to engine (Real mode only)
+        let start_sample = 0i64;
+        if let EngineMode::Real { bridge, .. } = &self.engine {
+            bridge.send_topology_command(ma_core::TopologyCommand::LoadClip {
+                track_id,
+                clip_id,
+                data,
+                channels: decoded.channels,
+                start_sample,
+                length_samples: decoded.length_samples as i64,
+            });
+        }
+
+        log::info!(
+            "Loaded audio clip '{name}' ({} samples, {}ch) into track {track_id:?}",
+            decoded.length_samples,
+            decoded.channels,
+        );
+    }
+
     // -- MIDI file loading --
 
     /// Load a parsed MIDI clip into the first available MIDI track.
@@ -464,6 +587,9 @@ impl AppData {
             duration_ticks: duration,
             name: name.to_string(),
             notes: Vec::new(), // UI note display populated separately
+            audio_file: None,
+            audio_length_samples: None,
+            audio_sample_rate: None,
         };
         self.clips.push(clip_state);
 
@@ -522,6 +648,337 @@ impl AppData {
         }
         // Return the buffer for reuse next frame
         self.response_buf = responses;
+    }
+
+    // -- Project save/load/export --
+
+    fn save_project_to(&self, path: &Path) -> Result<(), String> {
+        use ma_core::project_file::*;
+
+        let project_dir = path.parent().unwrap_or(path);
+
+        // Ensure audio directory exists
+        let audio_dir = project_dir.join("audio");
+        std::fs::create_dir_all(&audio_dir).map_err(|e| e.to_string())?;
+
+        let tracks: Vec<TrackFile> = self
+            .tracks
+            .iter()
+            .map(|track| {
+                let clips: Vec<ClipFile> = self
+                    .clips
+                    .iter()
+                    .filter(|c| c.track_id == track.id)
+                    .map(|clip| {
+                        // Copy audio file to project dir if needed
+                        let relative_audio = clip.audio_file.as_ref().and_then(|src_path| {
+                            let src = std::path::Path::new(src_path);
+                            let filename = src.file_name()?;
+                            let dest = audio_dir.join(filename);
+                            if src.exists() && !dest.exists() {
+                                let _ = std::fs::copy(src, &dest);
+                            }
+                            Some(format!("audio/{}", filename.to_string_lossy()))
+                        });
+
+                        ClipFile {
+                            id: clip.id,
+                            name: clip.name.clone(),
+                            start_tick: clip.start_tick,
+                            duration_ticks: clip.duration_ticks,
+                            notes: clip
+                                .notes
+                                .iter()
+                                .map(|n| NoteFile {
+                                    pitch: n.pitch,
+                                    start_tick: n.start_tick,
+                                    duration_ticks: n.duration_ticks,
+                                    velocity: n.velocity,
+                                    channel: n.channel,
+                                })
+                                .collect(),
+                            audio_file: relative_audio.or_else(|| clip.audio_file.clone()),
+                            audio_length_samples: clip.audio_length_samples,
+                            audio_sample_rate: clip.audio_sample_rate,
+                        }
+                    })
+                    .collect();
+
+                TrackFile {
+                    id: track.id,
+                    name: track.name.clone(),
+                    kind: match track.kind {
+                        TrackKind::Audio => TrackKindFile::Audio,
+                        TrackKind::Midi => TrackKindFile::Midi,
+                    },
+                    color: track.color,
+                    volume: track.volume,
+                    pan: track.pan,
+                    muted: track.mute,
+                    clips,
+                }
+            })
+            .collect();
+
+        let sample_rate = match &self.engine {
+            EngineMode::Real { bridge, .. } => bridge.sample_rate(),
+            EngineMode::Mock { .. } => 48000,
+        };
+
+        let project = ProjectFile {
+            version: PROJECT_VERSION,
+            name: path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Untitled".into()),
+            tempo: self.transport.tempo,
+            sample_rate,
+            tracks,
+        };
+
+        save_project(&project, path).map_err(|e| e.to_string())?;
+        log::info!("Project saved to {}", path.display());
+        Ok(())
+    }
+
+    fn load_project_from(&mut self, path: &Path) -> Result<(), String> {
+        use ma_core::project_file::*;
+
+        let project = load_project(path).map_err(|e| e.to_string())?;
+        let project_dir = path.parent().unwrap_or(path);
+
+        self.tracks.clear();
+        self.clips.clear();
+        self.audio_peaks.clear();
+        self.audio_data.clear();
+        self.transport.tempo = project.tempo;
+
+        let mut next_note_id = 1000u64;
+
+        for track_file in &project.tracks {
+            let kind = match track_file.kind {
+                TrackKindFile::Audio => TrackKind::Audio,
+                TrackKindFile::Midi => TrackKind::Midi,
+            };
+
+            self.tracks.push(TrackState {
+                id: track_file.id,
+                name: track_file.name.clone(),
+                kind,
+                volume: track_file.volume,
+                pan: track_file.pan,
+                mute: track_file.muted,
+                solo: false,
+                color: track_file.color,
+            });
+
+            for clip_file in &track_file.clips {
+                let notes: Vec<Note> = clip_file
+                    .notes
+                    .iter()
+                    .map(|n| {
+                        let id = NoteId(next_note_id);
+                        next_note_id += 1;
+                        Note {
+                            id,
+                            pitch: n.pitch,
+                            start_tick: n.start_tick,
+                            duration_ticks: n.duration_ticks,
+                            velocity: n.velocity,
+                            channel: n.channel,
+                        }
+                    })
+                    .collect();
+
+                // Resolve audio file path with traversal protection
+                let audio_file_abs = clip_file.audio_file.as_ref().and_then(|rel| {
+                    // Reject paths containing ".." to prevent directory traversal
+                    if rel.contains("..") {
+                        log::warn!("Audio file path contains '..', skipping: {rel}");
+                        return None;
+                    }
+                    let resolved = project_dir.join(rel);
+                    // If file exists, verify it stays within project directory
+                    if let (Ok(canonical_dir), Ok(canonical_file)) =
+                        (project_dir.canonicalize(), resolved.canonicalize())
+                    {
+                        if !canonical_file.starts_with(&canonical_dir) {
+                            log::warn!("Audio file path escapes project directory: {rel}");
+                            return None;
+                        }
+                    }
+                    Some(resolved.to_string_lossy().to_string())
+                });
+
+                // Load audio data if present
+                if let Some(ref abs_path) = audio_file_abs {
+                    let audio_path = std::path::Path::new(abs_path);
+                    if audio_path.exists() {
+                        if let Ok(decoded) = crate::file_loader::load_audio_file(audio_path) {
+                            let data: Arc<[f32]> = Arc::from(decoded.samples.into_boxed_slice());
+                            let peak_cache = ma_audio_engine::peak_cache::build_peak_cache(
+                                &data,
+                                decoded.channels,
+                                decoded.length_samples,
+                            );
+                            self.audio_peaks.insert(clip_file.id, Arc::new(peak_cache));
+                            self.audio_data.insert(clip_file.id, Arc::clone(&data));
+
+                            // Send to engine
+                            if let EngineMode::Real { bridge, .. } = &self.engine {
+                                bridge.send_topology_command(ma_core::TopologyCommand::LoadClip {
+                                    track_id: track_file.id,
+                                    clip_id: clip_file.id,
+                                    data,
+                                    channels: decoded.channels,
+                                    start_sample: 0,
+                                    length_samples: decoded.length_samples as i64,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                self.clips.push(ClipState {
+                    id: clip_file.id,
+                    track_id: track_file.id,
+                    start_tick: clip_file.start_tick,
+                    duration_ticks: clip_file.duration_ticks,
+                    name: clip_file.name.clone(),
+                    notes,
+                    audio_file: audio_file_abs,
+                    audio_length_samples: clip_file.audio_length_samples,
+                    audio_sample_rate: clip_file.audio_sample_rate,
+                });
+            }
+        }
+
+        self.piano_roll.next_note_id = next_note_id;
+        log::info!("Project loaded from {}", path.display());
+        Ok(())
+    }
+
+    fn export_project(&self, path: &Path, sample_rate: u32, bit_depth: ExportBitDepth) {
+        use ma_audio_engine::export::*;
+
+        let engine_config = EngineConfig {
+            sample_rate,
+            buffer_size: 256,
+            initial_tracks: self
+                .tracks
+                .iter()
+                .map(|t| {
+                    (
+                        t.id,
+                        ma_core::TrackConfig {
+                            name: t.name.clone(),
+                            channel_count: 2,
+                            input_enabled: false,
+                            initial_volume: t.volume,
+                            initial_pan: t.pan,
+                            track_type: match t.kind {
+                                TrackKind::Audio => ma_core::TrackType::Audio,
+                                TrackKind::Midi => ma_core::TrackType::Midi,
+                            },
+                        },
+                    )
+                })
+                .collect(),
+        };
+
+        let clips: Vec<ExportClip> = self
+            .audio_data
+            .iter()
+            .filter_map(|(clip_id, data)| {
+                let clip = self.clips.iter().find(|c| c.id == *clip_id)?;
+                Some(ExportClip {
+                    track_id: clip.track_id,
+                    clip_id: *clip_id,
+                    data: Arc::clone(data),
+                    channels: 2,
+                    start_sample: 0,
+                    length_samples: clip.audio_length_samples.unwrap_or(0) as i64,
+                })
+            })
+            .collect();
+
+        // Collect MIDI clips for export
+        let midi_clips: Vec<ExportMidiClip> = self
+            .clips
+            .iter()
+            .filter(|c| !c.notes.is_empty())
+            .map(|clip| {
+                let events: Vec<ma_core::parameters::MidiEvent> = clip
+                    .notes
+                    .iter()
+                    .flat_map(|n| {
+                        vec![
+                            ma_core::parameters::MidiEvent {
+                                tick: n.start_tick,
+                                message: ma_core::parameters::MidiMessage::NoteOn {
+                                    channel: n.channel,
+                                    note: n.pitch,
+                                    velocity: n.velocity,
+                                },
+                            },
+                            ma_core::parameters::MidiEvent {
+                                tick: n.start_tick + n.duration_ticks,
+                                message: ma_core::parameters::MidiMessage::NoteOff {
+                                    channel: n.channel,
+                                    note: n.pitch,
+                                    velocity: 0,
+                                },
+                            },
+                        ]
+                    })
+                    .collect();
+                let duration = clip.duration_ticks;
+                ExportMidiClip {
+                    track_id: clip.track_id,
+                    clip_id: clip.id,
+                    clip: Arc::new(ma_core::MidiClip::new(events, duration)),
+                    start_tick: clip.start_tick,
+                }
+            })
+            .collect();
+
+        // Find total duration in samples
+        let max_tick = self
+            .clips
+            .iter()
+            .map(|c| c.start_tick + c.duration_ticks)
+            .max()
+            .unwrap_or(0);
+        let total_seconds = max_tick as f64 / PPQN as f64 * 60.0 / self.transport.tempo;
+        let total_samples = (total_seconds * sample_rate as f64) as u64 + sample_rate as u64; // +1s padding
+
+        let bd = match bit_depth {
+            ExportBitDepth::Sixteen => BitDepth::Sixteen,
+            ExportBitDepth::ThirtyTwoFloat => BitDepth::ThirtyTwoFloat,
+        };
+
+        let export_config = ExportConfig {
+            sample_rate,
+            bit_depth: bd,
+        };
+
+        let path = path.to_path_buf();
+        log::info!("Export started: {}", path.display());
+        // Run export on background thread to avoid blocking UI
+        // NOTE: JoinHandle is dropped — no UI feedback on completion yet (known limitation)
+        std::thread::spawn(move || {
+            match offline_render(
+                engine_config,
+                &clips,
+                &midi_clips,
+                total_samples,
+                &path,
+                &export_config,
+            ) {
+                Ok(()) => log::info!("Export complete: {}", path.display()),
+                Err(e) => log::error!("Export failed: {e}"),
+            }
+        });
     }
 
     // -- Dispatch helpers --
@@ -822,6 +1279,25 @@ impl Model for AppData {
                 self.piano_roll.zoom_x = (self.piano_roll.zoom_x * factor).clamp(0.01, 2.0);
             }
 
+            // Project save/load/export
+            AppEvent::SaveProject(path) => {
+                if let Err(e) = self.save_project_to(path) {
+                    log::error!("Failed to save project: {e}");
+                }
+            }
+            AppEvent::LoadProject(path) => {
+                if let Err(e) = self.load_project_from(path) {
+                    log::error!("Failed to load project: {e}");
+                }
+            }
+            AppEvent::ExportProject {
+                path,
+                sample_rate,
+                bit_depth,
+            } => {
+                self.export_project(path, *sample_rate, *bit_depth);
+            }
+
             // Browser
             AppEvent::BrowserRefresh => {
                 self.browser.refresh();
@@ -842,7 +1318,12 @@ impl Model for AppData {
                             Err(e) => log::warn!("Failed to load MIDI file: {e}"),
                         }
                     } else if entry.is_audio() {
-                        log::info!("Audio file loading planned for next iteration");
+                        match crate::file_loader::load_audio_file(&entry.path) {
+                            Ok(decoded) => {
+                                self.load_audio_clip_into_track(decoded, &entry.name, &entry.path);
+                            }
+                            Err(e) => log::warn!("Failed to load audio file: {e}"),
+                        }
                     }
                 }
             }

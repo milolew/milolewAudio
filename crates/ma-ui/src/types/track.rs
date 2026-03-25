@@ -65,6 +65,15 @@ pub struct ClipState {
     pub duration_ticks: Tick,
     pub name: String,
     pub notes: Vec<Note>,
+    /// For audio clips: path to the source audio file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_file: Option<String>,
+    /// For audio clips: number of audio samples per channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_length_samples: Option<usize>,
+    /// For audio clips: sample rate of the source file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_sample_rate: Option<u32>,
 }
 
 impl ClipState {
@@ -78,45 +87,33 @@ impl ClipState {
         new_notes.push(note);
         new_notes.sort_by_key(|n| n.start_tick);
         Self {
-            id: self.id,
-            track_id: self.track_id,
-            start_tick: self.start_tick,
-            duration_ticks: self.duration_ticks,
-            name: self.name.clone(),
             notes: new_notes,
+            ..self.clone()
         }
     }
 
     /// Return a new ClipState with a note removed (immutable pattern).
     pub fn with_note_removed(&self, note_id: super::midi::NoteId) -> Self {
         Self {
-            id: self.id,
-            track_id: self.track_id,
-            start_tick: self.start_tick,
-            duration_ticks: self.duration_ticks,
-            name: self.name.clone(),
             notes: self
                 .notes
                 .iter()
                 .filter(|n| n.id != note_id)
                 .copied()
                 .collect(),
+            ..self.clone()
         }
     }
 
     /// Return a new ClipState with a note replaced (immutable pattern).
     pub fn with_note_updated(&self, updated: Note) -> Self {
         Self {
-            id: self.id,
-            track_id: self.track_id,
-            start_tick: self.start_tick,
-            duration_ticks: self.duration_ticks,
-            name: self.name.clone(),
             notes: self
                 .notes
                 .iter()
                 .map(|n| if n.id == updated.id { updated } else { *n })
                 .collect(),
+            ..self.clone()
         }
     }
 }

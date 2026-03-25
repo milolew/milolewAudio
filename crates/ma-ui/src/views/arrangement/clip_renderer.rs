@@ -3,6 +3,8 @@
 use vizia::prelude::*;
 use vizia::vg;
 
+use ma_audio_engine::peak_cache::PeakCache;
+
 use crate::types::track::ClipState;
 
 /// Parameters for drawing clips within a track lane.
@@ -14,8 +16,14 @@ pub struct ClipDrawParams {
     pub track_color: [u8; 3],
 }
 
-/// Draw a single clip (body, header bar, border, name text, and MIDI note rectangles).
-pub fn draw_clip(canvas: &Canvas, clip: &ClipState, params: &ClipDrawParams, is_selected: bool) {
+/// Draw a single clip (body, header bar, border, name text, waveform or MIDI notes).
+pub fn draw_clip(
+    canvas: &Canvas,
+    clip: &ClipState,
+    params: &ClipDrawParams,
+    is_selected: bool,
+    peak_cache: Option<&PeakCache>,
+) {
     let bounds = params.bounds;
     let scale = params.scale;
     let zoom_x = params.zoom_x;
@@ -103,23 +111,32 @@ pub fn draw_clip(canvas: &Canvas, clip: &ClipState, params: &ClipDrawParams, is_
         canvas.restore();
     }
 
-    // -- Mini MIDI note rectangles (for MIDI clips with notes) --
+    // -- Content area: waveform for audio clips, MIDI notes for MIDI clips --
     let geom = ClipGeometry {
         draw_x,
         draw_end_x,
+        clip_x,
         clip_y,
         clip_h,
+        clip_w,
         header_h,
     };
-    draw_midi_notes(canvas, clip, params, &geom);
+
+    if let Some(peaks) = peak_cache {
+        draw_audio_waveform(canvas, clip, params, &geom, peaks);
+    } else {
+        draw_midi_notes(canvas, clip, params, &geom);
+    }
 }
 
 /// Computed clip geometry passed between drawing stages.
 struct ClipGeometry {
     draw_x: f32,
     draw_end_x: f32,
+    clip_x: f32,
     clip_y: f32,
     clip_h: f32,
+    clip_w: f32,
     header_h: f32,
 }
 
@@ -181,6 +198,64 @@ fn draw_midi_notes(
                 &note_paint,
             );
         }
+    }
+
+    canvas.restore();
+}
+
+/// Draw audio waveform from peak cache data inside a clip's content area.
+fn draw_audio_waveform(
+    canvas: &Canvas,
+    clip: &ClipState,
+    params: &ClipDrawParams,
+    geom: &ClipGeometry,
+    peaks: &PeakCache,
+) {
+    if geom.clip_h <= geom.header_h + 4.0 {
+        return;
+    }
+
+    let wave_y = geom.clip_y + geom.header_h + 1.0;
+    let wave_h = geom.clip_h - geom.header_h - 2.0;
+    let center_y = wave_y + wave_h / 2.0;
+
+    let [tr, tg, tb] = params.track_color;
+    let mut wave_paint = vg::Paint::default();
+    wave_paint.set_color(vg::Color::from_argb(180, tr, tg, tb));
+    wave_paint.set_style(vg::PaintStyle::Stroke);
+    wave_paint.set_stroke_width(1.0);
+    wave_paint.set_anti_alias(true);
+
+    let draw_w = geom.draw_end_x - geom.draw_x;
+    let target_pixels = draw_w.max(1.0) as usize;
+
+    let total_samples = clip.audio_length_samples.unwrap_or(0);
+    if total_samples == 0 {
+        return;
+    }
+
+    // Calculate which portion of the clip's samples are visible
+    let clip_start_px = geom.clip_x;
+    let samples_per_pixel = total_samples as f32 / geom.clip_w.max(1.0);
+
+    let vis_offset_px = (geom.draw_x - clip_start_px).max(0.0);
+    let start_sample = (vis_offset_px * samples_per_pixel) as usize;
+    let end_sample = (start_sample + (draw_w * samples_per_pixel) as usize).min(total_samples);
+
+    canvas.save();
+    canvas.clip_rect(
+        vg::Rect::from_xywh(geom.draw_x, wave_y, draw_w, wave_h),
+        None,
+        Some(true),
+    );
+
+    // Draw channel 0 waveform
+    let peak_data = peaks.peaks_for_range(0, start_sample, end_sample, target_pixels);
+    for (i, &(min, max)) in peak_data.iter().enumerate() {
+        let x = geom.draw_x + i as f32;
+        let y_min = center_y - max * (wave_h / 2.0);
+        let y_max = center_y - min * (wave_h / 2.0);
+        canvas.draw_line((x, y_min), (x, y_max), &wave_paint);
     }
 
     canvas.restore();

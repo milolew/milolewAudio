@@ -6,6 +6,7 @@
 
 use std::path::Path;
 
+use ma_audio_engine::audio_decode::{self, DecodedAudio};
 use ma_core::midi_clip::MidiClip;
 use ma_core::parameters::{MidiEvent, MidiMessage};
 
@@ -18,6 +19,8 @@ pub enum FileLoadError {
     Parse(String),
     /// File contains no usable events.
     Empty,
+    /// Audio decoding error.
+    AudioDecode(String),
 }
 
 impl std::fmt::Display for FileLoadError {
@@ -26,6 +29,7 @@ impl std::fmt::Display for FileLoadError {
             Self::Io(e) => write!(f, "I/O error: {e}"),
             Self::Parse(msg) => write!(f, "parse error: {msg}"),
             Self::Empty => write!(f, "file contains no MIDI events"),
+            Self::AudioDecode(msg) => write!(f, "audio decode error: {msg}"),
         }
     }
 }
@@ -34,6 +38,11 @@ impl From<std::io::Error> for FileLoadError {
     fn from(e: std::io::Error) -> Self {
         Self::Io(e)
     }
+}
+
+/// Decode an audio file (WAV, FLAC, MP3, OGG) to raw samples.
+pub fn load_audio_file(path: &Path) -> Result<DecodedAudio, FileLoadError> {
+    audio_decode::decode_audio_file(path).map_err(|e| FileLoadError::AudioDecode(e.to_string()))
 }
 
 /// Parse a Standard MIDI File and return a `MidiClip`.

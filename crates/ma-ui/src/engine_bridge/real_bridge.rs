@@ -6,7 +6,7 @@
 use std::sync::atomic::Ordering;
 
 use ma_audio_engine::engine::EngineHandle;
-use ma_core::commands::EngineCommand as CoreCommand;
+use ma_core::commands::{EngineCommand as CoreCommand, TopologyCommand};
 use ma_core::events::EngineEvent;
 use ma_core::parameters::TransportState;
 use ma_core::time::PPQN;
@@ -132,5 +132,20 @@ impl RealEngineBridge {
     /// Map a UI TrackId to a core command for track solo.
     pub fn send_track_solo(&mut self, track_id: TrackId, solo: bool) {
         self.send_command(CoreCommand::SetTrackSolo { track_id, solo });
+    }
+
+    /// Send a topology command (heap-allocating, non-RT).
+    pub fn send_topology_command(&self, cmd: TopologyCommand) -> bool {
+        self.handle.topology_command_sender.send(cmd).is_ok()
+    }
+
+    /// Get the current sample rate.
+    pub fn sample_rate(&self) -> u32 {
+        self.handle.config.sample_rate
+    }
+
+    /// Get the current tempo.
+    pub fn tempo(&self) -> f64 {
+        self.tempo
     }
 }

@@ -49,8 +49,10 @@ impl AudioNode for OutputNode {
         &mut self,
         inputs: &[&AudioBuffer],
         _outputs: &mut [&mut AudioBuffer],
-        _context: &ProcessContext,
+        context: &ProcessContext,
     ) {
+        // Ensure our internal buffer matches the current callback size
+        self.output_buffer.set_frames(context.buffer_size);
         if let Some(input) = inputs.first() {
             self.output_buffer.copy_from(input);
             // Clamp to prevent DAC clipping
