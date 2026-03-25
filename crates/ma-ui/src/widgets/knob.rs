@@ -126,7 +126,12 @@ impl View for Knob {
             None,
             Some(true),
         );
-        canvas.draw_str(&self.label, (bounds.x + 2.0 * scale, label_y), &font, &label_paint);
+        canvas.draw_str(
+            &self.label,
+            (bounds.x + 2.0 * scale, label_y),
+            &font,
+            &label_paint,
+        );
         canvas.restore();
     }
 

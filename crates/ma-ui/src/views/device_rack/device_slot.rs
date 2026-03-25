@@ -54,9 +54,16 @@ impl DeviceSlot {
         slot.build(cx, |cx| {
             // Parameter knobs row
             for (i, param) in data.parameters.iter().enumerate() {
-                Knob::new(cx, i, param.value, param.default_value, &param.name, data.color)
-                    .width(Pixels(44.0))
-                    .height(Pixels(56.0));
+                Knob::new(
+                    cx,
+                    i,
+                    param.value,
+                    param.default_value,
+                    &param.name,
+                    data.color,
+                )
+                .width(Pixels(44.0))
+                .height(Pixels(56.0));
             }
         })
     }
@@ -77,7 +84,12 @@ impl View for DeviceSlot {
         // -- Slot background --
         let bg_alpha = if self.data.bypassed { 20 } else { 40 };
         let mut bg_paint = vg::Paint::default();
-        bg_paint.set_color(vg::Color::from_argb(255, 35 + bg_alpha, 35 + bg_alpha, 38 + bg_alpha));
+        bg_paint.set_color(vg::Color::from_argb(
+            255,
+            35 + bg_alpha,
+            35 + bg_alpha,
+            38 + bg_alpha,
+        ));
         bg_paint.set_style(vg::PaintStyle::Fill);
         bg_paint.set_anti_alias(true);
 

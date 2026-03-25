@@ -19,11 +19,7 @@ pub struct WaveformDrawParams {
 ///
 /// Each entry in `peaks` is `(tick_position, peak_amplitude_0_to_1)`,
 /// captured once per poll frame while recording is active.
-pub fn draw_recording_waveform(
-    canvas: &Canvas,
-    peaks: &[(i64, f32)],
-    params: &WaveformDrawParams,
-) {
+pub fn draw_recording_waveform(canvas: &Canvas, peaks: &[(i64, f32)], params: &WaveformDrawParams) {
     if peaks.is_empty() {
         return;
     }

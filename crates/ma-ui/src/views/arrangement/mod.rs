@@ -23,7 +23,7 @@ use vizia::vg;
 
 use crate::app_data::{AppData, AppEvent};
 use crate::types::time::PPQN;
-use crate::types::track::{ClipId, TrackKind};
+use crate::types::track::{ClipId, ClipState, TrackKind};
 use crate::widgets::timeline_ruler::TimelineRuler;
 
 use self::clip_renderer::{draw_clip, ClipDrawParams};
@@ -269,17 +269,19 @@ impl TrackLane {
     ) -> Option<ClipId> {
         let track = app.tracks.get(track_index)?;
         let arrangement = &app.arrangement;
-
-        for clip in app.clips.iter().filter(|c| c.track_id == track.id) {
-            let clip_x = bounds_x
-                + ((clip.start_tick as f64 - arrangement.scroll_x) * arrangement.zoom_x) as f32;
-            let clip_w = (clip.duration_ticks as f64 * arrangement.zoom_x) as f32;
-
-            if x >= clip_x && x <= clip_x + clip_w {
-                return Some(clip.id);
-            }
-        }
-        None
+        let track_clips: Vec<_> = app
+            .clips
+            .iter()
+            .filter(|c| c.track_id == track.id)
+            .cloned()
+            .collect();
+        hit_test_clip(
+            &track_clips,
+            arrangement.zoom_x,
+            arrangement.scroll_x,
+            x,
+            bounds_x,
+        )
     }
 }
 
@@ -479,5 +481,174 @@ impl View for TrackLane {
             }
             _ => {}
         });
+    }
+}
+
+/// Hit-test clips at a pixel position. Returns the first clip containing x.
+///
+/// Extracted from `TrackLane::clip_at_position` for testability.
+fn hit_test_clip(
+    clips: &[ClipState],
+    zoom_x: f64,
+    scroll_x: f64,
+    x: f32,
+    bounds_x: f32,
+) -> Option<ClipId> {
+    for clip in clips {
+        let clip_x = bounds_x + ((clip.start_tick as f64 - scroll_x) * zoom_x) as f32;
+        let clip_w = (clip.duration_ticks as f64 * zoom_x) as f32;
+        if x >= clip_x && x <= clip_x + clip_w {
+            return Some(clip.id);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::arrangement_state::ArrangementState;
+    use crate::types::track::TrackId;
+    use uuid::Uuid;
+
+    fn test_clip_id(n: u128) -> ClipId {
+        ClipId(Uuid::from_u128(n))
+    }
+
+    fn test_track_id() -> TrackId {
+        TrackId(Uuid::from_u128(999))
+    }
+
+    fn make_clip(id: u128, start: i64, duration: i64) -> ClipState {
+        ClipState {
+            id: test_clip_id(id),
+            track_id: test_track_id(),
+            start_tick: start,
+            duration_ticks: duration,
+            name: format!("Clip {id}"),
+            notes: Vec::new(),
+        }
+    }
+
+    // -- Coordinate conversion tests (ArrangementState) --
+
+    #[test]
+    fn tick_to_x_at_origin() {
+        let state = ArrangementState::default();
+        let x = state.tick_to_x(0);
+        assert!((x - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn tick_to_x_positive() {
+        let state = ArrangementState {
+            zoom_x: 0.1,
+            scroll_x: 0.0,
+            ..Default::default()
+        };
+        let x = state.tick_to_x(960);
+        assert!((x - 96.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn tick_to_x_with_scroll() {
+        let state = ArrangementState {
+            zoom_x: 0.1,
+            scroll_x: 480.0,
+            ..Default::default()
+        };
+        let x = state.tick_to_x(960);
+        assert!((x - 48.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn x_to_tick_roundtrip() {
+        let state = ArrangementState {
+            zoom_x: 0.1,
+            scroll_x: 200.0,
+            ..Default::default()
+        };
+        let tick = 960_i64;
+        let x = state.tick_to_x(tick);
+        let recovered = state.x_to_tick(x);
+        assert_eq!(recovered, tick);
+    }
+
+    #[test]
+    fn x_to_tick_roundtrip_high_zoom() {
+        let state = ArrangementState {
+            zoom_x: 0.5,
+            scroll_x: 1000.0,
+            ..Default::default()
+        };
+        let tick = 5000_i64;
+        let x = state.tick_to_x(tick);
+        let recovered = state.x_to_tick(x);
+        assert_eq!(recovered, tick);
+    }
+
+    // -- Clip hit testing --
+
+    #[test]
+    fn hit_test_clip_inside() {
+        let clips = vec![make_clip(1, 0, 960)];
+        let result = hit_test_clip(&clips, 0.1, 0.0, 50.0, 0.0);
+        assert_eq!(result, Some(test_clip_id(1)));
+    }
+
+    #[test]
+    fn hit_test_clip_outside_right() {
+        let clips = vec![make_clip(1, 0, 960)];
+        let result = hit_test_clip(&clips, 0.1, 0.0, 100.0, 0.0);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn hit_test_clip_outside_left() {
+        let clips = vec![make_clip(1, 960, 960)];
+        let result = hit_test_clip(&clips, 0.1, 0.0, 50.0, 0.0);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn hit_test_clip_at_boundary() {
+        let clips = vec![make_clip(1, 0, 960)];
+        let result = hit_test_clip(&clips, 0.1, 0.0, 96.0, 0.0);
+        assert_eq!(result, Some(test_clip_id(1)));
+    }
+
+    #[test]
+    fn hit_test_clip_with_scroll() {
+        let clips = vec![make_clip(1, 960, 960)];
+        let result = hit_test_clip(&clips, 0.1, 960.0, 50.0, 0.0);
+        assert_eq!(result, Some(test_clip_id(1)));
+    }
+
+    #[test]
+    fn hit_test_clip_with_bounds_offset() {
+        let clips = vec![make_clip(1, 0, 960)];
+        let result = hit_test_clip(&clips, 0.1, 0.0, 150.0, 100.0);
+        assert_eq!(result, Some(test_clip_id(1)));
+    }
+
+    #[test]
+    fn hit_test_clip_between_two_clips() {
+        let clips = vec![make_clip(1, 0, 480), make_clip(2, 960, 480)];
+        let result = hit_test_clip(&clips, 0.1, 0.0, 70.0, 0.0);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn hit_test_clip_second_of_two() {
+        let clips = vec![make_clip(1, 0, 480), make_clip(2, 960, 480)];
+        let result = hit_test_clip(&clips, 0.1, 0.0, 100.0, 0.0);
+        assert_eq!(result, Some(test_clip_id(2)));
+    }
+
+    #[test]
+    fn hit_test_empty_clips() {
+        let clips: Vec<ClipState> = Vec::new();
+        let result = hit_test_clip(&clips, 0.1, 0.0, 50.0, 0.0);
+        assert_eq!(result, None);
     }
 }
