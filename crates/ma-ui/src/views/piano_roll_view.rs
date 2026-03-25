@@ -433,20 +433,18 @@ impl PianoRollGrid {
         let rel_x = mouse_x - bounds.x;
         let rel_y = mouse_y - bounds.y;
 
-        // Iterate in reverse so topmost (last-drawn) notes get priority
-        for note in clip.notes.iter().rev() {
-            let nx = pr.tick_to_x(note.start_tick);
-            let ny = pr.pitch_to_y(note.pitch, bounds.y) - bounds.y;
-            let nw = ((note.duration_ticks as f64) * pr.zoom_x) as f32;
-            let nh = pr.note_height;
-
-            if rel_x >= nx && rel_x <= nx + nw && rel_y >= ny && rel_y <= ny + nh {
-                // Check if near right edge (resize zone)
-                let near_right_edge = rel_x >= nx + nw - RESIZE_HIT_ZONE;
-                return Some((*note, near_right_edge));
-            }
-        }
-        None
+        hit_test_note_in_slice(
+            &clip.notes,
+            &NoteHitTestParams {
+                zoom_x: pr.zoom_x,
+                scroll_x: pr.scroll_x,
+                scroll_y: pr.scroll_y,
+                note_height: pr.note_height,
+                resize_hit_zone: RESIZE_HIT_ZONE,
+            },
+            rel_x,
+            rel_y,
+        )
     }
 
     /// Convert screen coordinates to (tick, pitch).
@@ -571,7 +569,7 @@ impl View for PianoRollGrid {
                 }
 
                 cx.capture();
-                cx.needs_redraw();
+                cx.needs_redraw(); // REDRAW: on-change — note draw start
                 meta.consume();
             }
 
@@ -589,7 +587,7 @@ impl View for PianoRollGrid {
                     cx.emit(AppEvent::RemoveNote(note.id));
                 }
 
-                cx.needs_redraw();
+                cx.needs_redraw(); // REDRAW: on-change — note delete
                 meta.consume();
             }
 
@@ -621,7 +619,7 @@ impl View for PianoRollGrid {
                                 current_end_tick: snapped_end,
                             },
                         ));
-                        cx.needs_redraw();
+                        cx.needs_redraw(); // REDRAW: on-change — DrawingNote drag
                     }
 
                     PianoRollInteraction::DraggingNote {
@@ -641,7 +639,7 @@ impl View for PianoRollGrid {
                             new_start: clamped_start,
                             new_pitch,
                         });
-                        cx.needs_redraw();
+                        cx.needs_redraw(); // REDRAW: on-change — DraggingNote move
                     }
 
                     PianoRollInteraction::ResizingNote {
@@ -666,7 +664,7 @@ impl View for PianoRollGrid {
                                 note_id: *note_id,
                                 new_duration,
                             });
-                            cx.needs_redraw();
+                            cx.needs_redraw(); // REDRAW: on-change — ResizingNote right edge
                         }
                     }
 
@@ -699,7 +697,7 @@ impl View for PianoRollGrid {
                                 note_id: the_note_id,
                                 new_duration,
                             });
-                            cx.needs_redraw();
+                            cx.needs_redraw(); // REDRAW: on-change — ResizingNote left edge
                         }
                     }
 
@@ -751,7 +749,7 @@ impl View for PianoRollGrid {
 
                 cx.emit(AppEvent::UpdateInteraction(PianoRollInteraction::Idle));
                 cx.release();
-                cx.needs_redraw();
+                cx.needs_redraw(); // REDRAW: on-change — end interaction
                 meta.consume();
             }
 
@@ -769,11 +767,297 @@ impl View for PianoRollGrid {
                     cx.emit(AppEvent::ScrollPianoRollX(scroll_amount));
                 }
 
-                cx.needs_redraw();
+                cx.needs_redraw(); // REDRAW: on-change — zoom/scroll
                 meta.consume();
             }
 
             _ => {}
         });
+    }
+}
+
+/// Parameters for note hit testing, extracted for testability.
+struct NoteHitTestParams {
+    zoom_x: f64,
+    scroll_x: f64,
+    scroll_y: u8,
+    note_height: f32,
+    resize_hit_zone: f32,
+}
+
+/// Hit-test notes in a slice. Returns (note, near_right_edge) for the topmost hit.
+///
+/// Extracted from `PianoRollGrid::hit_test_note` for testability.
+/// `rel_x` and `rel_y` are relative to the grid origin (bounds top-left).
+fn hit_test_note_in_slice(
+    notes: &[Note],
+    params: &NoteHitTestParams,
+    rel_x: f32,
+    rel_y: f32,
+) -> Option<(Note, bool)> {
+    for note in notes.iter().rev() {
+        let nx = ((note.start_tick as f64 - params.scroll_x) * params.zoom_x) as f32;
+        let ny = (params.scroll_y as f32 - note.pitch as f32) * params.note_height;
+        let nw = ((note.duration_ticks as f64) * params.zoom_x) as f32;
+        let nh = params.note_height;
+
+        if rel_x >= nx && rel_x <= nx + nw && rel_y >= ny && rel_y <= ny + nh {
+            let near_right_edge = rel_x >= nx + nw - params.resize_hit_zone;
+            return Some((*note, near_right_edge));
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::piano_roll_state::PianoRollState;
+    use crate::types::midi::{Note, NoteId};
+
+    fn make_note(id: u64, pitch: u8, start: i64, duration: i64) -> Note {
+        Note {
+            id: NoteId(id),
+            pitch,
+            start_tick: start,
+            duration_ticks: duration,
+            velocity: 100,
+            channel: 0,
+        }
+    }
+
+    // -- Coordinate conversion tests (PianoRollState) --
+
+    #[test]
+    fn tick_to_x_at_origin() {
+        let pr = PianoRollState::default(); // zoom_x=0.15, scroll_x=0.0
+        let x = pr.tick_to_x(0);
+        assert!((x - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn tick_to_x_positive() {
+        let pr = PianoRollState {
+            zoom_x: 0.2,
+            scroll_x: 0.0,
+            ..Default::default()
+        };
+        // 960 ticks * 0.2 px/tick = 192.0 px
+        let x = pr.tick_to_x(960);
+        assert!((x - 192.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn x_to_tick_roundtrip() {
+        let pr = PianoRollState {
+            zoom_x: 0.2,
+            scroll_x: 500.0,
+            ..Default::default()
+        };
+        let tick = 2000_i64;
+        let x = pr.tick_to_x(tick);
+        let recovered = pr.x_to_tick(x);
+        assert_eq!(recovered, tick);
+    }
+
+    #[test]
+    fn pitch_to_y_and_back() {
+        let pr = PianoRollState {
+            scroll_y: 84,
+            note_height: 14.0,
+            ..Default::default()
+        };
+        let rect_top = 0.0;
+        let pitch = 60_u8; // C4
+
+        let y = pr.pitch_to_y(pitch, rect_top);
+        let recovered = pr.y_to_pitch(y + pr.note_height / 2.0, rect_top);
+        assert_eq!(recovered, pitch);
+    }
+
+    #[test]
+    fn pitch_to_y_higher_pitch_smaller_y() {
+        let pr = PianoRollState::default();
+        let y_c4 = pr.pitch_to_y(60, 0.0);
+        let y_c5 = pr.pitch_to_y(72, 0.0);
+        // Higher pitch → smaller y (higher on screen)
+        assert!(y_c5 < y_c4);
+    }
+
+    #[test]
+    fn y_to_pitch_clamps_to_valid_range() {
+        let pr = PianoRollState::default();
+        // Very large y → low pitch, clamped to 0
+        let pitch = pr.y_to_pitch(10000.0, 0.0);
+        assert_eq!(pitch, 0);
+        // Negative y → high pitch, clamped to 127
+        let pitch = pr.y_to_pitch(-10000.0, 0.0);
+        assert_eq!(pitch, 127);
+    }
+
+    // -- Note hit testing --
+
+    #[test]
+    fn hit_test_note_body() {
+        let notes = vec![make_note(1, 60, 0, 960)];
+        let pr = PianoRollState {
+            zoom_x: 0.2,
+            scroll_x: 0.0,
+            scroll_y: 84,
+            note_height: 14.0,
+            ..Default::default()
+        };
+        // Note at pitch 60: y = (84-60)*14 = 336.0, note spans x=[0, 192]
+        let rel_x = 50.0;
+        let rel_y = 340.0; // Inside the note row
+        let result = hit_test_note_in_slice(
+            &notes,
+            &NoteHitTestParams {
+                zoom_x: pr.zoom_x,
+                scroll_x: pr.scroll_x,
+                scroll_y: pr.scroll_y,
+                note_height: pr.note_height,
+                resize_hit_zone: RESIZE_HIT_ZONE,
+            },
+            rel_x,
+            rel_y,
+        );
+        assert!(result.is_some());
+        let (note, near_edge) = result.unwrap();
+        assert_eq!(note.id, NoteId(1));
+        assert!(!near_edge);
+    }
+
+    #[test]
+    fn hit_test_note_right_edge_resize() {
+        let notes = vec![make_note(1, 60, 0, 960)];
+        let pr = PianoRollState {
+            zoom_x: 0.2,
+            scroll_x: 0.0,
+            scroll_y: 84,
+            note_height: 14.0,
+            ..Default::default()
+        };
+        // Note right edge at x=192. Click at 190 (within RESIZE_HIT_ZONE=6)
+        let rel_x = 190.0;
+        let rel_y = 340.0;
+        let result = hit_test_note_in_slice(
+            &notes,
+            &NoteHitTestParams {
+                zoom_x: pr.zoom_x,
+                scroll_x: pr.scroll_x,
+                scroll_y: pr.scroll_y,
+                note_height: pr.note_height,
+                resize_hit_zone: RESIZE_HIT_ZONE,
+            },
+            rel_x,
+            rel_y,
+        );
+        assert!(result.is_some());
+        let (_, near_edge) = result.unwrap();
+        assert!(near_edge);
+    }
+
+    #[test]
+    fn hit_test_note_miss() {
+        let notes = vec![make_note(1, 60, 0, 960)];
+        let pr = PianoRollState {
+            zoom_x: 0.2,
+            scroll_x: 0.0,
+            scroll_y: 84,
+            note_height: 14.0,
+            ..Default::default()
+        };
+        // Click far from any note
+        let result = hit_test_note_in_slice(
+            &notes,
+            &NoteHitTestParams {
+                zoom_x: pr.zoom_x,
+                scroll_x: pr.scroll_x,
+                scroll_y: pr.scroll_y,
+                note_height: pr.note_height,
+                resize_hit_zone: RESIZE_HIT_ZONE,
+            },
+            500.0,
+            340.0,
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn hit_test_note_topmost_wins() {
+        // Two overlapping notes at the same position
+        let notes = vec![make_note(1, 60, 0, 960), make_note(2, 60, 0, 960)];
+        let pr = PianoRollState {
+            zoom_x: 0.2,
+            scroll_x: 0.0,
+            scroll_y: 84,
+            note_height: 14.0,
+            ..Default::default()
+        };
+        let rel_x = 50.0;
+        let rel_y = 340.0;
+        let result = hit_test_note_in_slice(
+            &notes,
+            &NoteHitTestParams {
+                zoom_x: pr.zoom_x,
+                scroll_x: pr.scroll_x,
+                scroll_y: pr.scroll_y,
+                note_height: pr.note_height,
+                resize_hit_zone: RESIZE_HIT_ZONE,
+            },
+            rel_x,
+            rel_y,
+        );
+        assert!(result.is_some());
+        // Last note in list (id=2) is "topmost" due to reverse iteration
+        assert_eq!(result.unwrap().0.id, NoteId(2));
+    }
+
+    #[test]
+    fn hit_test_empty_notes() {
+        let notes: Vec<Note> = Vec::new();
+        let result = hit_test_note_in_slice(
+            &notes,
+            &NoteHitTestParams {
+                zoom_x: 0.2,
+                scroll_x: 0.0,
+                scroll_y: 84,
+                note_height: 14.0,
+                resize_hit_zone: RESIZE_HIT_ZONE,
+            },
+            50.0,
+            340.0,
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn hit_test_note_with_scroll() {
+        let notes = vec![make_note(1, 60, 960, 960)];
+        let pr = PianoRollState {
+            zoom_x: 0.2,
+            scroll_x: 960.0, // Scrolled to start of note
+            scroll_y: 84,
+            note_height: 14.0,
+            ..Default::default()
+        };
+        // Note starts at tick 960, with scroll_x=960 → x starts at 0
+        let rel_x = 50.0;
+        let rel_y = (84.0 - 60.0) * 14.0 + 5.0; // Inside note row
+        let result = hit_test_note_in_slice(
+            &notes,
+            &NoteHitTestParams {
+                zoom_x: pr.zoom_x,
+                scroll_x: pr.scroll_x,
+                scroll_y: pr.scroll_y,
+                note_height: pr.note_height,
+                resize_hit_zone: RESIZE_HIT_ZONE,
+            },
+            rel_x,
+            rel_y,
+        );
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0.id, NoteId(1));
     }
 }

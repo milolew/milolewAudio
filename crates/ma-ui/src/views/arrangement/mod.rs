@@ -13,13 +13,23 @@
 //! +-------------------+-------------------------------------+
 //! ```
 
+mod clip_renderer;
+mod grid;
+mod live_waveform;
+mod playhead;
+
 use vizia::prelude::*;
 use vizia::vg;
 
 use crate::app_data::{AppData, AppEvent};
 use crate::types::time::PPQN;
-use crate::types::track::{ClipId, TrackKind};
+use crate::types::track::{ClipId, ClipState, TrackKind};
 use crate::widgets::timeline_ruler::TimelineRuler;
+
+use self::clip_renderer::{draw_clip, ClipDrawParams};
+use self::grid::{draw_grid, GridParams};
+use self::live_waveform::{draw_recording_waveform, WaveformDrawParams};
+use self::playhead::{draw_loop_region, draw_playhead};
 
 /// Width of the track header panel in pixels.
 const HEADER_WIDTH: f32 = 180.0;
@@ -231,14 +241,23 @@ impl View for TrackHeader {
 // TrackLane — custom-drawn clip area with grid, clips, and playhead
 // ---------------------------------------------------------------------------
 
-/// Track lane — draws clips, grid lines, and playhead for a single track.
+/// Track lane — draws clips, grid lines, playhead, and live waveform for a single track.
 struct TrackLane {
     track_index: usize,
+    /// Accumulated (tick, peak) samples during recording.
+    recording_peaks: Vec<(i64, f32)>,
+    /// Whether recording was active on the previous poll.
+    was_recording: bool,
 }
 
 impl TrackLane {
     fn new(cx: &mut Context, track_index: usize) -> Handle<'_, Self> {
-        Self { track_index }.build(cx, |_cx| {})
+        Self {
+            track_index,
+            recording_peaks: Vec::new(),
+            was_recording: false,
+        }
+        .build(cx, |_cx| {})
     }
 
     /// Hit-test: find which clip (if any) is under the given pixel coordinate.
@@ -250,17 +269,19 @@ impl TrackLane {
     ) -> Option<ClipId> {
         let track = app.tracks.get(track_index)?;
         let arrangement = &app.arrangement;
-
-        for clip in app.clips.iter().filter(|c| c.track_id == track.id) {
-            let clip_x = bounds_x
-                + ((clip.start_tick as f64 - arrangement.scroll_x) * arrangement.zoom_x) as f32;
-            let clip_w = (clip.duration_ticks as f64 * arrangement.zoom_x) as f32;
-
-            if x >= clip_x && x <= clip_x + clip_w {
-                return Some(clip.id);
-            }
-        }
-        None
+        let track_clips: Vec<_> = app
+            .clips
+            .iter()
+            .filter(|c| c.track_id == track.id)
+            .cloned()
+            .collect();
+        hit_test_clip(
+            &track_clips,
+            arrangement.zoom_x,
+            arrangement.scroll_x,
+            x,
+            bounds_x,
+        )
     }
 }
 
@@ -288,7 +309,6 @@ impl View for TrackLane {
             None => return,
         };
 
-        let [tr, tg, tb] = track.color;
         let is_selected = arrangement.selected_track == Some(track.id);
 
         // -- Background (alternating row shading) --
@@ -308,236 +328,63 @@ impl View for TrackLane {
             &bg_paint,
         );
 
-        // -- Vertical grid lines (bars and beats) --
+        // -- Vertical grid lines --
         let ticks_per_beat = PPQN;
         let ticks_per_bar = ticks_per_beat * time_sig.numerator as i64;
 
-        let visible_ticks = if zoom_x > 0.0 {
-            (bounds.w as f64 / zoom_x) as i64
-        } else {
-            0
-        };
-        let start_tick = scroll_x as i64;
-        let end_tick = start_tick + visible_ticks;
-
-        let pixels_per_beat = (ticks_per_beat as f64 * zoom_x) as f32;
-        let show_beats = pixels_per_beat >= 8.0 * scale;
-
-        let mut bar_line_paint = vg::Paint::default();
-        bar_line_paint.set_color(vg::Color::from_argb(60, 128, 128, 128));
-        bar_line_paint.set_style(vg::PaintStyle::Stroke);
-        bar_line_paint.set_stroke_width(0.5 * scale);
-        bar_line_paint.set_anti_alias(true);
-
-        let mut beat_line_paint = vg::Paint::default();
-        beat_line_paint.set_color(vg::Color::from_argb(30, 128, 128, 128));
-        beat_line_paint.set_style(vg::PaintStyle::Stroke);
-        beat_line_paint.set_stroke_width(0.5 * scale);
-        beat_line_paint.set_anti_alias(true);
-
-        let first_bar_tick = if start_tick > 0 {
-            (start_tick / ticks_per_bar) * ticks_per_bar
-        } else {
-            0
-        };
-
-        let mut bar_tick = first_bar_tick;
-        while bar_tick <= end_tick + ticks_per_bar {
-            let x = bounds.x + ((bar_tick as f64 - scroll_x) * zoom_x) as f32;
-
-            if x >= bounds.x - 1.0 && x <= bounds.x + bounds.w + 1.0 {
-                canvas.draw_line((x, bounds.y), (x, bounds.y + bounds.h), &bar_line_paint);
-            }
-
-            if show_beats {
-                for beat in 1..time_sig.numerator {
-                    let beat_tick = bar_tick + ticks_per_beat * beat as i64;
-                    let bx = bounds.x + ((beat_tick as f64 - scroll_x) * zoom_x) as f32;
-                    if bx >= bounds.x && bx <= bounds.x + bounds.w {
-                        canvas.draw_line(
-                            (bx, bounds.y),
-                            (bx, bounds.y + bounds.h),
-                            &beat_line_paint,
-                        );
-                    }
-                }
-            }
-
-            bar_tick += ticks_per_bar;
-        }
+        draw_grid(
+            canvas,
+            &GridParams {
+                bounds,
+                scale,
+                zoom_x,
+                scroll_x,
+                ticks_per_beat,
+                ticks_per_bar,
+                time_sig_numerator: time_sig.numerator,
+            },
+        );
 
         // -- Loop region overlay --
         if transport.loop_enabled {
-            let loop_x_start =
+            let loop_start_x =
                 bounds.x + ((transport.loop_start as f64 - scroll_x) * zoom_x) as f32;
-            let loop_x_end = bounds.x + ((transport.loop_end as f64 - scroll_x) * zoom_x) as f32;
-
-            let lx = loop_x_start.max(bounds.x);
-            let rx = loop_x_end.min(bounds.x + bounds.w);
-
-            if rx > lx {
-                let mut loop_paint = vg::Paint::default();
-                loop_paint.set_color(vg::Color::from_argb(15, 80, 160, 255));
-                loop_paint.set_style(vg::PaintStyle::Fill);
-                loop_paint.set_anti_alias(true);
-                canvas.draw_rect(
-                    vg::Rect::from_xywh(lx, bounds.y, rx - lx, bounds.h),
-                    &loop_paint,
-                );
-            }
+            let loop_end_x = bounds.x + ((transport.loop_end as f64 - scroll_x) * zoom_x) as f32;
+            draw_loop_region(canvas, bounds, loop_start_x, loop_end_x);
         }
 
         // -- Clips --
-        let clip_padding = 2.0 * scale;
-        let clip_corner_radius = 3.0 * scale;
-        let clip_font = vg::Font::default();
+        let clip_params = ClipDrawParams {
+            bounds,
+            scale,
+            zoom_x,
+            scroll_x,
+            track_color: track.color,
+        };
 
         for clip in app.clips.iter().filter(|c| c.track_id == track.id) {
-            let clip_x = bounds.x + ((clip.start_tick as f64 - scroll_x) * zoom_x) as f32;
-            let clip_w = (clip.duration_ticks as f64 * zoom_x) as f32;
-            let clip_end_x = clip_x + clip_w;
-
-            // Skip clips entirely outside visible area
-            if clip_end_x < bounds.x || clip_x > bounds.x + bounds.w {
-                continue;
-            }
-
-            // Clamp clip rect to visible area for drawing
-            let draw_x = clip_x.max(bounds.x);
-            let draw_end_x = clip_end_x.min(bounds.x + bounds.w);
-            let draw_w = draw_end_x - draw_x;
-
-            if draw_w <= 0.0 {
-                continue;
-            }
-
-            let clip_y = bounds.y + clip_padding;
-            let clip_h = bounds.h - clip_padding * 2.0;
-
-            // Clip fill (semi-transparent track color)
-            let mut clip_fill = vg::Paint::default();
-            clip_fill.set_color(vg::Color::from_argb(100, tr, tg, tb));
-            clip_fill.set_style(vg::PaintStyle::Fill);
-            clip_fill.set_anti_alias(true);
-
-            let clip_rect = vg::Rect::from_xywh(draw_x, clip_y, draw_w, clip_h);
-            let rrect = vg::RRect::new_rect_xy(clip_rect, clip_corner_radius, clip_corner_radius);
-            canvas.draw_rrect(rrect, &clip_fill);
-
-            // Clip border
             let is_clip_selected = arrangement.selected_clips.contains(&clip.id);
-            let mut clip_border = vg::Paint::default();
-            if is_clip_selected {
-                clip_border.set_color(vg::Color::from_argb(220, 255, 255, 255));
-                clip_border.set_stroke_width(1.5 * scale);
-            } else {
-                clip_border.set_color(vg::Color::from_argb(140, tr, tg, tb));
-                clip_border.set_stroke_width(1.0 * scale);
-            }
-            clip_border.set_style(vg::PaintStyle::Stroke);
-            clip_border.set_anti_alias(true);
-            canvas.draw_rrect(rrect, &clip_border);
+            draw_clip(canvas, clip, &clip_params, is_clip_selected);
+        }
 
-            // Clip header bar (top strip with brighter color)
-            let header_h = 14.0 * scale;
-            if clip_h > header_h + 2.0 {
-                let mut header_paint = vg::Paint::default();
-                header_paint.set_color(vg::Color::from_argb(160, tr, tg, tb));
-                header_paint.set_style(vg::PaintStyle::Fill);
-                header_paint.set_anti_alias(true);
-
-                let header_rect = vg::Rect::from_xywh(draw_x, clip_y, draw_w, header_h);
-                // Use a clipped rounded rect for the header portion
-                canvas.save();
-                canvas.clip_rect(header_rect, None, Some(true));
-                canvas.draw_rrect(rrect, &header_paint);
-                canvas.restore();
-            }
-
-            // Clip name text (inside header area)
-            if draw_w > 20.0 * scale {
-                let mut name_paint = vg::Paint::default();
-                name_paint.set_color(vg::Color::from_argb(255, 240, 240, 240));
-                name_paint.set_anti_alias(true);
-
-                let text_x = draw_x + 4.0 * scale;
-                let text_y = clip_y + header_h - 3.0 * scale;
-
-                canvas.save();
-                canvas.clip_rect(
-                    vg::Rect::from_xywh(draw_x, clip_y, draw_w, header_h),
-                    None,
-                    Some(true),
-                );
-                canvas.draw_str(&clip.name, (text_x, text_y), &clip_font, &name_paint);
-                canvas.restore();
-            }
-
-            // Mini MIDI note rectangles (for MIDI clips with notes)
-            if !clip.notes.is_empty() && clip_h > header_h + 8.0 {
-                let note_area_y = clip_y + header_h + 1.0;
-                let note_area_h = clip_h - header_h - 2.0;
-
-                // Find pitch range in this clip
-                let min_pitch = clip.notes.iter().map(|n| n.pitch).min().unwrap_or(0);
-                let max_pitch = clip.notes.iter().map(|n| n.pitch).max().unwrap_or(127);
-                let pitch_range = (max_pitch - min_pitch).max(1) as f32 + 2.0;
-
-                let mut note_paint = vg::Paint::default();
-                note_paint.set_color(vg::Color::from_argb(200, tr, tg, tb));
-                note_paint.set_style(vg::PaintStyle::Fill);
-                note_paint.set_anti_alias(true);
-
-                // Clip rendering area for notes
-                canvas.save();
-                canvas.clip_rect(
-                    vg::Rect::from_xywh(draw_x, note_area_y, draw_w, note_area_h),
-                    None,
-                    Some(true),
-                );
-
-                for note in &clip.notes {
-                    let note_x = bounds.x + ((note.start_tick as f64 - scroll_x) * zoom_x) as f32;
-                    let note_w = (note.duration_ticks as f64 * zoom_x) as f32;
-
-                    // Y position: higher pitches at top
-                    let pitch_offset = (max_pitch - note.pitch) as f32 + 1.0;
-                    let note_y = note_area_y + (pitch_offset / pitch_range) * note_area_h;
-                    let note_h = (note_area_h / pitch_range).max(1.0).min(4.0 * scale);
-
-                    if note_x + note_w >= draw_x && note_x <= draw_end_x {
-                        canvas.draw_rect(
-                            vg::Rect::from_xywh(
-                                note_x.max(draw_x),
-                                note_y,
-                                note_w.min(draw_end_x - note_x.max(draw_x)),
-                                note_h,
-                            ),
-                            &note_paint,
-                        );
-                    }
-                }
-
-                canvas.restore();
-            }
+        // -- Live recording waveform --
+        if !self.recording_peaks.is_empty() {
+            draw_recording_waveform(
+                canvas,
+                &self.recording_peaks,
+                &WaveformDrawParams {
+                    bounds,
+                    scale,
+                    zoom_x,
+                    scroll_x,
+                    track_color: track.color,
+                },
+            );
         }
 
         // -- Playhead --
         let playhead_x = bounds.x + ((transport.position as f64 - scroll_x) * zoom_x) as f32;
-
-        if playhead_x >= bounds.x && playhead_x <= bounds.x + bounds.w {
-            let mut playhead_paint = vg::Paint::default();
-            playhead_paint.set_color(vg::Color::from_argb(255, 255, 68, 68));
-            playhead_paint.set_style(vg::PaintStyle::Stroke);
-            playhead_paint.set_stroke_width(1.5 * scale);
-            playhead_paint.set_anti_alias(true);
-
-            canvas.draw_line(
-                (playhead_x, bounds.y),
-                (playhead_x, bounds.y + bounds.h),
-                &playhead_paint,
-            );
-        }
+        draw_playhead(canvas, bounds, scale, playhead_x);
 
         // -- Bottom separator --
         let mut sep_paint = vg::Paint::default();
@@ -553,6 +400,29 @@ impl View for TrackLane {
     }
 
     fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
+        // Accumulate peak meter data during recording for live waveform
+        event.map(|app_event, _meta| {
+            if let AppEvent::PollEngine = app_event {
+                if let Some(app) = cx.data::<AppData>() {
+                    let is_recording = app.transport.is_recording;
+                    if is_recording {
+                        if let Some(track) = app.tracks.get(self.track_index) {
+                            let meter = app.mixer.get_meter(track.id);
+                            let peak = meter.peak_l.max(meter.peak_r);
+                            // Cap at ~30 min of recording at 60fps (108_000 entries ≈ 1.6 MB)
+                            if self.recording_peaks.len() < 108_000 {
+                                self.recording_peaks.push((app.transport.position, peak));
+                            }
+                        }
+                    } else if self.was_recording {
+                        self.recording_peaks.clear();
+                    }
+                    self.was_recording = is_recording;
+                }
+                cx.needs_redraw(); // REDRAW: animated — playhead + recording waveform
+            }
+        });
+
         event.map(|window_event, meta| match window_event {
             WindowEvent::MouseScroll(dx, dy) => {
                 let modifiers = cx.modifiers();
@@ -586,7 +456,7 @@ impl View for TrackLane {
                     }
                 }
 
-                cx.needs_redraw();
+                cx.needs_redraw(); // REDRAW: on-change — zoom/scroll
                 meta.consume();
             }
             WindowEvent::MouseDoubleClick(MouseButton::Left) => {
@@ -614,5 +484,174 @@ impl View for TrackLane {
             }
             _ => {}
         });
+    }
+}
+
+/// Hit-test clips at a pixel position. Returns the first clip containing x.
+///
+/// Extracted from `TrackLane::clip_at_position` for testability.
+fn hit_test_clip(
+    clips: &[ClipState],
+    zoom_x: f64,
+    scroll_x: f64,
+    x: f32,
+    bounds_x: f32,
+) -> Option<ClipId> {
+    for clip in clips {
+        let clip_x = bounds_x + ((clip.start_tick as f64 - scroll_x) * zoom_x) as f32;
+        let clip_w = (clip.duration_ticks as f64 * zoom_x) as f32;
+        if x >= clip_x && x <= clip_x + clip_w {
+            return Some(clip.id);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::arrangement_state::ArrangementState;
+    use crate::types::track::TrackId;
+    use uuid::Uuid;
+
+    fn test_clip_id(n: u128) -> ClipId {
+        ClipId(Uuid::from_u128(n))
+    }
+
+    fn test_track_id() -> TrackId {
+        TrackId(Uuid::from_u128(999))
+    }
+
+    fn make_clip(id: u128, start: i64, duration: i64) -> ClipState {
+        ClipState {
+            id: test_clip_id(id),
+            track_id: test_track_id(),
+            start_tick: start,
+            duration_ticks: duration,
+            name: format!("Clip {id}"),
+            notes: Vec::new(),
+        }
+    }
+
+    // -- Coordinate conversion tests (ArrangementState) --
+
+    #[test]
+    fn tick_to_x_at_origin() {
+        let state = ArrangementState::default();
+        let x = state.tick_to_x(0);
+        assert!((x - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn tick_to_x_positive() {
+        let state = ArrangementState {
+            zoom_x: 0.1,
+            scroll_x: 0.0,
+            ..Default::default()
+        };
+        let x = state.tick_to_x(960);
+        assert!((x - 96.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn tick_to_x_with_scroll() {
+        let state = ArrangementState {
+            zoom_x: 0.1,
+            scroll_x: 480.0,
+            ..Default::default()
+        };
+        let x = state.tick_to_x(960);
+        assert!((x - 48.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn x_to_tick_roundtrip() {
+        let state = ArrangementState {
+            zoom_x: 0.1,
+            scroll_x: 200.0,
+            ..Default::default()
+        };
+        let tick = 960_i64;
+        let x = state.tick_to_x(tick);
+        let recovered = state.x_to_tick(x);
+        assert_eq!(recovered, tick);
+    }
+
+    #[test]
+    fn x_to_tick_roundtrip_high_zoom() {
+        let state = ArrangementState {
+            zoom_x: 0.5,
+            scroll_x: 1000.0,
+            ..Default::default()
+        };
+        let tick = 5000_i64;
+        let x = state.tick_to_x(tick);
+        let recovered = state.x_to_tick(x);
+        assert_eq!(recovered, tick);
+    }
+
+    // -- Clip hit testing --
+
+    #[test]
+    fn hit_test_clip_inside() {
+        let clips = vec![make_clip(1, 0, 960)];
+        let result = hit_test_clip(&clips, 0.1, 0.0, 50.0, 0.0);
+        assert_eq!(result, Some(test_clip_id(1)));
+    }
+
+    #[test]
+    fn hit_test_clip_outside_right() {
+        let clips = vec![make_clip(1, 0, 960)];
+        let result = hit_test_clip(&clips, 0.1, 0.0, 100.0, 0.0);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn hit_test_clip_outside_left() {
+        let clips = vec![make_clip(1, 960, 960)];
+        let result = hit_test_clip(&clips, 0.1, 0.0, 50.0, 0.0);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn hit_test_clip_at_boundary() {
+        let clips = vec![make_clip(1, 0, 960)];
+        let result = hit_test_clip(&clips, 0.1, 0.0, 96.0, 0.0);
+        assert_eq!(result, Some(test_clip_id(1)));
+    }
+
+    #[test]
+    fn hit_test_clip_with_scroll() {
+        let clips = vec![make_clip(1, 960, 960)];
+        let result = hit_test_clip(&clips, 0.1, 960.0, 50.0, 0.0);
+        assert_eq!(result, Some(test_clip_id(1)));
+    }
+
+    #[test]
+    fn hit_test_clip_with_bounds_offset() {
+        let clips = vec![make_clip(1, 0, 960)];
+        let result = hit_test_clip(&clips, 0.1, 0.0, 150.0, 100.0);
+        assert_eq!(result, Some(test_clip_id(1)));
+    }
+
+    #[test]
+    fn hit_test_clip_between_two_clips() {
+        let clips = vec![make_clip(1, 0, 480), make_clip(2, 960, 480)];
+        let result = hit_test_clip(&clips, 0.1, 0.0, 70.0, 0.0);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn hit_test_clip_second_of_two() {
+        let clips = vec![make_clip(1, 0, 480), make_clip(2, 960, 480)];
+        let result = hit_test_clip(&clips, 0.1, 0.0, 100.0, 0.0);
+        assert_eq!(result, Some(test_clip_id(2)));
+    }
+
+    #[test]
+    fn hit_test_empty_clips() {
+        let clips: Vec<ClipState> = Vec::new();
+        let result = hit_test_clip(&clips, 0.1, 0.0, 50.0, 0.0);
+        assert_eq!(result, None);
     }
 }

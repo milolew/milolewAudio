@@ -176,7 +176,7 @@ impl View for KeyboardStrip {
                 }
 
                 cx.capture();
-                cx.needs_redraw();
+                cx.needs_redraw(); // REDRAW: on-change — key press
                 meta.consume();
             }
             WindowEvent::MouseUp(MouseButton::Left) => {

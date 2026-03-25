@@ -3,7 +3,7 @@
 use vizia::prelude::*;
 
 use crate::app_data::{ActiveView, AppData, AppEvent};
-use crate::views::arrangement_view::ArrangementView;
+use crate::views::arrangement::ArrangementView;
 use crate::views::mixer_view::MixerView;
 use crate::views::piano_roll_view::PianoRollView;
 use crate::widgets::transport_bar::TransportBar;

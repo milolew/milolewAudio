@@ -258,7 +258,7 @@ impl View for TimelineRuler {
                     let scroll_amount = -*dy as f64 * 200.0 / app.arrangement.zoom_x.max(0.001);
                     cx.emit(AppEvent::ScrollArrangementX(scroll_amount));
                 }
-                cx.needs_redraw();
+                cx.needs_redraw(); // REDRAW: on-change — horizontal scroll
                 meta.consume();
             }
             _ => {}

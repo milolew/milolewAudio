@@ -32,14 +32,17 @@ impl MixerView {
                     },
                 );
 
-                // CPU load indicator at the end of the strip row
+                // CPU load indicator — Binding avoids format! on every mixer poll
                 VStack::new(cx, |cx| {
                     Label::new(cx, "CPU").class("cpu-title");
-                    Label::new(
+                    Binding::new(
                         cx,
-                        AppData::mixer.map(|m| format!("{:.0}%", m.cpu_load * 100.0)),
-                    )
-                    .class("cpu-value");
+                        AppData::mixer.map(|m| (m.cpu_load * 100.0).round() as i32),
+                        |cx, cpu_key| {
+                            let pct = cpu_key.get(cx);
+                            Label::new(cx, &format!("{pct}%")).class("cpu-value");
+                        },
+                    );
                 })
                 .class("mixer-cpu-panel");
             })
