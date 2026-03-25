@@ -14,6 +14,7 @@ pub mod events;
 pub mod ids;
 pub mod midi_clip;
 pub mod parameters;
+pub mod project_file;
 pub mod time;
 
 pub use audio_buffer::{AudioBuffer, BufferError};
