@@ -9,6 +9,7 @@ use vizia::vg;
 use crate::app_data::{AppData, AppEvent};
 use crate::types::track::TrackId;
 use crate::widgets::fader::Fader;
+use crate::widgets::pan_knob::PanKnob;
 use crate::widgets::peak_meter::PeakMeter;
 
 /// Color accent bar drawn at the left edge of the channel strip.
@@ -110,6 +111,12 @@ impl ChannelStrip {
                             );
                     })
                     .class("strip-btn-row");
+
+                    // -- Pan knob --
+                    PanKnob::new(cx, track_id)
+                        .class("strip-pan-knob")
+                        .height(Pixels(44.0))
+                        .width(Pixels(44.0));
 
                     // -- Fader + PeakMeter side by side --
                     HStack::new(cx, |cx| {

@@ -419,10 +419,8 @@ mod tests {
         let enumeration = dm.enumerate_devices();
         // We can't assert specific devices exist in CI, but the enumeration
         // should complete without panic and return a valid struct.
-        assert!(
-            enumeration.output_devices.len() > 0 || enumeration.input_devices.len() >= 0,
-            "enumeration completed"
-        );
+        // Enumeration should complete without panic — no specific devices guaranteed in CI.
+        let _ = &enumeration;
     }
 
     #[test]

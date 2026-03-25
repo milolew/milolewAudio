@@ -73,7 +73,10 @@ pub fn samples_to_ticks(sample: SamplePos, tempo_bpm: f64, sample_rate: f64) -> 
 /// Convert ticks to samples, returning 0 on invalid input.
 ///
 /// This is a backwards-compatible wrapper around [`ticks_to_samples`].
-#[deprecated(since = "0.2.0", note = "Use ticks_to_samples() which returns Option<SamplePos>")]
+#[deprecated(
+    since = "0.2.0",
+    note = "Use ticks_to_samples() which returns Option<SamplePos>"
+)]
 pub fn ticks_to_samples_or_zero(tick: Tick, tempo_bpm: f64, sample_rate: f64) -> SamplePos {
     ticks_to_samples(tick, tempo_bpm, sample_rate).unwrap_or(0)
 }
@@ -81,7 +84,10 @@ pub fn ticks_to_samples_or_zero(tick: Tick, tempo_bpm: f64, sample_rate: f64) ->
 /// Convert samples to ticks, returning 0 on invalid input.
 ///
 /// This is a backwards-compatible wrapper around [`samples_to_ticks`].
-#[deprecated(since = "0.2.0", note = "Use samples_to_ticks() which returns Option<Tick>")]
+#[deprecated(
+    since = "0.2.0",
+    note = "Use samples_to_ticks() which returns Option<Tick>"
+)]
 pub fn samples_to_ticks_or_zero(sample: SamplePos, tempo_bpm: f64, sample_rate: f64) -> Tick {
     samples_to_ticks(sample, tempo_bpm, sample_rate).unwrap_or(0)
 }
@@ -140,12 +146,8 @@ impl BarBeatTick {
         note = "Use from_ticks() which returns Result<BarBeatTick, TimeError>"
     )]
     pub fn from_ticks_clamped(absolute_tick: Tick, numerator: u8, denominator: u8) -> Self {
-        Self::from_ticks(
-            absolute_tick,
-            numerator.max(1),
-            denominator.max(1),
-        )
-        .expect("clamped values are always valid")
+        Self::from_ticks(absolute_tick, numerator.max(1), denominator.max(1))
+            .expect("clamped values are always valid")
     }
 }
 

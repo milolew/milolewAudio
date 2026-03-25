@@ -215,7 +215,7 @@ pub fn build_engine(
         });
 
         // Add nodes to the graph
-        all_nodes.push(Box::new(result.player_node));
+        all_nodes.push(result.player_node);
         all_nodes.push(Box::new(result.track_node));
 
         tracks.push(result.track);
@@ -245,9 +245,10 @@ pub fn build_engine(
     let input_node_graph_index = graph.find_node_index(input_node_id);
     let output_node_graph_index = graph.find_node_index(output_node_id);
 
-    // Cache track node graph indices to avoid O(N) scans in the audio callback
+    // Cache graph indices to avoid O(N) scans in the audio callback
     for track in &mut tracks {
         track.track_node_graph_index = graph.find_node_index(track.track_node_id);
+        track.player_node_graph_index = graph.find_node_index(track.player_node_id);
     }
 
     let callback_state = CallbackState {
@@ -314,6 +315,7 @@ mod tests {
                         input_enabled: true,
                         initial_volume: 0.8,
                         initial_pan: 0.0,
+                        track_type: ma_core::parameters::TrackType::Audio,
                     },
                 ),
                 (
@@ -324,6 +326,7 @@ mod tests {
                         input_enabled: false,
                         initial_volume: 1.0,
                         initial_pan: 0.0,
+                        track_type: ma_core::parameters::TrackType::Audio,
                     },
                 ),
             ],
@@ -362,5 +365,194 @@ mod tests {
             event,
             EngineEvent::TransportStateChanged(TransportState::Playing)
         ));
+    }
+
+    // ── Mixer wiring integration tests ────────────────────────────
+
+    /// Build engine with 1 audio + 1 MIDI track for mixer integration tests.
+    fn mixer_test_engine() -> (
+        crate::callback::CallbackState,
+        EngineHandle,
+        TrackId,
+        TrackId,
+    ) {
+        let audio_id = TrackId::new();
+        let midi_id = TrackId::new();
+        let config = EngineConfig {
+            sample_rate: 48000,
+            buffer_size: 256,
+            initial_tracks: vec![
+                (
+                    audio_id,
+                    TrackConfig {
+                        name: "Audio 1".into(),
+                        channel_count: 2,
+                        input_enabled: false,
+                        initial_volume: 1.0,
+                        initial_pan: 0.0,
+                        track_type: ma_core::parameters::TrackType::Audio,
+                    },
+                ),
+                (
+                    midi_id,
+                    TrackConfig {
+                        name: "MIDI 1".into(),
+                        channel_count: 2,
+                        input_enabled: false,
+                        initial_volume: 1.0,
+                        initial_pan: 0.0,
+                        track_type: ma_core::parameters::TrackType::Midi,
+                    },
+                ),
+            ],
+        };
+        let (state, handle) = build_engine(config).unwrap();
+        (state, handle, audio_id, midi_id)
+    }
+
+    #[test]
+    fn mixer_volume_command_updates_atomic() {
+        let (mut state, mut handle, audio_id, _) = mixer_test_engine();
+
+        handle
+            .command_producer
+            .push(EngineCommand::SetTrackVolume {
+                track_id: audio_id,
+                volume: 0.42,
+            })
+            .unwrap();
+
+        crate::command_processor::process_commands(
+            &mut state.command_consumer,
+            &mut state.event_producer,
+            &mut state.transport,
+            &mut state.graph,
+            &state.tracks,
+        );
+
+        let track = state.tracks.iter().find(|t| t.id == audio_id).unwrap();
+        let vol = track
+            .volume
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .to_bits();
+        let expected = 0.42f32.to_bits();
+        assert_eq!(vol, expected);
+    }
+
+    #[test]
+    fn mixer_mute_solo_commands() {
+        let (mut state, mut handle, audio_id, midi_id) = mixer_test_engine();
+
+        handle
+            .command_producer
+            .push(EngineCommand::SetTrackMute {
+                track_id: audio_id,
+                mute: true,
+            })
+            .unwrap();
+        handle
+            .command_producer
+            .push(EngineCommand::SetTrackSolo {
+                track_id: midi_id,
+                solo: true,
+            })
+            .unwrap();
+
+        crate::command_processor::process_commands(
+            &mut state.command_consumer,
+            &mut state.event_producer,
+            &mut state.transport,
+            &mut state.graph,
+            &state.tracks,
+        );
+
+        let audio = state.tracks.iter().find(|t| t.id == audio_id).unwrap();
+        assert!(audio.mute.load(std::sync::atomic::Ordering::Relaxed));
+
+        let midi = state.tracks.iter().find(|t| t.id == midi_id).unwrap();
+        assert!(midi.solo.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn mixer_callback_produces_master_peak_event() {
+        let (mut state, mut handle, _, _) = mixer_test_engine();
+
+        // Run one audio callback cycle
+        let mut output = vec![0.0f32; 256 * 2]; // 256 frames, stereo
+        crate::callback::audio_callback(&mut state, &mut output, 256);
+
+        // Drain events and look for MasterPeakMeter
+        let mut found_master = false;
+        while let Ok(event) = handle.event_consumer.pop() {
+            if matches!(event, EngineEvent::MasterPeakMeter { .. }) {
+                found_master = true;
+            }
+        }
+        assert!(
+            found_master,
+            "Expected MasterPeakMeter event after callback"
+        );
+    }
+
+    #[test]
+    fn mixer_pan_command_updates_atomic() {
+        let (mut state, mut handle, _, midi_id) = mixer_test_engine();
+
+        handle
+            .command_producer
+            .push(EngineCommand::SetTrackPan {
+                track_id: midi_id,
+                pan: -0.75,
+            })
+            .unwrap();
+
+        crate::command_processor::process_commands(
+            &mut state.command_consumer,
+            &mut state.event_producer,
+            &mut state.transport,
+            &mut state.graph,
+            &state.tracks,
+        );
+
+        let track = state.tracks.iter().find(|t| t.id == midi_id).unwrap();
+        let pan = track
+            .pan
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .to_bits();
+        let expected = (-0.75f32).to_bits();
+        assert_eq!(pan, expected);
+    }
+
+    #[test]
+    fn mixed_audio_midi_graph_indices_cached() {
+        let (mut state, _, audio_id, midi_id) = mixer_test_engine();
+
+        for track in &state.tracks {
+            assert!(
+                track.track_node_graph_index.is_some(),
+                "track_node_graph_index not cached for track {:?}",
+                track.id
+            );
+            assert!(
+                track.player_node_graph_index.is_some(),
+                "player_node_graph_index not cached for track {:?}",
+                track.id
+            );
+        }
+
+        // Verify player node types via downcast
+        let audio_track = state.tracks.iter().find(|t| t.id == audio_id).unwrap();
+        let audio_idx = audio_track.player_node_graph_index.unwrap();
+        assert!(state
+            .graph
+            .node_downcast_mut::<crate::graph::nodes::wav_player::WavPlayerNode>(audio_idx)
+            .is_some());
+
+        let midi_track = state.tracks.iter().find(|t| t.id == midi_id).unwrap();
+        let midi_idx = midi_track.player_node_graph_index.unwrap();
+        assert!(state
+            .graph
+            .node_downcast_mut::<crate::graph::nodes::midi_player::MidiPlayerNode>(midi_idx)
+            .is_some());
     }
 }

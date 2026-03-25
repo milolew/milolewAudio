@@ -23,6 +23,9 @@ pub enum EngineResponse {
         peak_r: f32,
     },
 
+    /// Master bus peak meter levels.
+    MasterMeterUpdate { peak_l: f32, peak_r: f32 },
+
     /// Audio thread CPU load (0.0 - 1.0).
     CpuLoad(f32),
 }

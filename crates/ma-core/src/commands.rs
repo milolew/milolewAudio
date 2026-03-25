@@ -8,8 +8,9 @@
 use std::sync::Arc;
 
 use crate::ids::{ClipId, TrackId};
+use crate::midi_clip::MidiClip;
 use crate::parameters::TrackConfig;
-use crate::time::SamplePos;
+use crate::time::{SamplePos, Tick};
 
 /// A command from the UI to the audio engine.
 ///
@@ -68,6 +69,20 @@ pub enum EngineCommand {
     /// Stop recording on all armed tracks.
     StopRecording,
 
+    // ── Clip management (forwarded from topology processor) ────
+    /// Install a MIDI clip into a track's MidiPlayerNode.
+    /// The `Arc<MidiClip>` is safe on the audio thread because the UI always holds
+    /// another reference — the audio thread never drops the last Arc.
+    InstallMidiClip {
+        track_id: TrackId,
+        clip_id: ClipId,
+        clip: Arc<crate::midi_clip::MidiClip>,
+        start_tick: Tick,
+    },
+
+    /// Remove a MIDI clip from a track's MidiPlayerNode.
+    RemoveMidiClipFromPlayer { track_id: TrackId, clip_id: ClipId },
+
     // ── Engine lifecycle ───────────────────────────────────────
     /// Gracefully shut down the audio engine.
     Shutdown,
@@ -106,8 +121,21 @@ pub enum TopologyCommand {
         length_samples: SamplePos,
     },
 
-    /// Remove a clip from a track.
+    /// Remove an audio clip from a track.
     RemoveClip { track_id: TrackId, clip_id: ClipId },
+
+    /// Load a MIDI clip for playback on a track.
+    /// `clip` is an `Arc<MidiClip>` — the audio thread only reads events
+    /// and never drops the last reference.
+    LoadMidiClip {
+        track_id: TrackId,
+        clip_id: ClipId,
+        clip: Arc<MidiClip>,
+        start_tick: Tick,
+    },
+
+    /// Remove a MIDI clip from a track.
+    RemoveMidiClip { track_id: TrackId, clip_id: ClipId },
 }
 
 // Ensure TopologyCommand is Send.
@@ -246,9 +274,12 @@ mod tests {
 
     #[test]
     fn topology_command_all_variants() {
+        use crate::midi_clip::MidiClip;
+
         let track_id = TrackId::new();
         let clip_id = ClipId::new();
         let data: Arc<[f32]> = Arc::from(vec![0.0f32; 1024].into_boxed_slice());
+        let midi_clip = Arc::new(MidiClip::new(vec![], 960));
 
         let cmds: Vec<TopologyCommand> = vec![
             TopologyCommand::AddTrack {
@@ -265,8 +296,15 @@ mod tests {
                 length_samples: 512,
             },
             TopologyCommand::RemoveClip { track_id, clip_id },
+            TopologyCommand::LoadMidiClip {
+                track_id,
+                clip_id,
+                clip: midi_clip,
+                start_tick: 0,
+            },
+            TopologyCommand::RemoveMidiClip { track_id, clip_id },
         ];
-        assert_eq!(cmds.len(), 4);
+        assert_eq!(cmds.len(), 6);
 
         // Pattern matching coverage.
         for cmd in &cmds {
@@ -286,6 +324,19 @@ mod tests {
                     assert_eq!(*length_samples, 512);
                 }
                 TopologyCommand::RemoveClip {
+                    track_id: tid,
+                    clip_id: cid,
+                } => {
+                    assert_eq!(*tid, track_id);
+                    assert_eq!(*cid, clip_id);
+                }
+                TopologyCommand::LoadMidiClip {
+                    start_tick, clip, ..
+                } => {
+                    assert_eq!(*start_tick, 0);
+                    assert_eq!(clip.duration_ticks(), 960);
+                }
+                TopologyCommand::RemoveMidiClip {
                     track_id: tid,
                     clip_id: cid,
                 } => {

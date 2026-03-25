@@ -10,6 +10,7 @@
 pub mod app_data;
 pub mod config;
 pub mod engine_bridge;
+pub mod file_loader;
 pub mod state;
 pub mod types;
 pub mod views;

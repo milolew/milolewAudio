@@ -134,6 +134,16 @@ impl TryFrom<u8> for ControllerNumber {
     }
 }
 
+/// Whether a track plays audio files or MIDI.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrackType {
+    /// Audio track with WavPlayerNode for clip playback.
+    #[default]
+    Audio,
+    /// MIDI track with MidiPlayerNode and built-in synth.
+    Midi,
+}
+
 /// Configuration for creating a new track.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackConfig {
@@ -151,6 +161,9 @@ pub struct TrackConfig {
 
     /// Initial pan (-1.0 left, 0.0 center, 1.0 right).
     pub initial_pan: f32,
+
+    /// Track type: audio or MIDI.
+    pub track_type: TrackType,
 }
 
 impl Default for TrackConfig {
@@ -161,6 +174,7 @@ impl Default for TrackConfig {
             input_enabled: false,
             initial_volume: 1.0,
             initial_pan: 0.0,
+            track_type: TrackType::Audio,
         }
     }
 }
@@ -215,11 +229,7 @@ pub enum MidiMessage {
 
 impl MidiMessage {
     /// Create a validated NoteOn message.
-    pub fn note_on(
-        channel: MidiChannel,
-        note: MidiNote,
-        velocity: Velocity,
-    ) -> Self {
+    pub fn note_on(channel: MidiChannel, note: MidiNote, velocity: Velocity) -> Self {
         Self::NoteOn {
             channel: channel.value(),
             note: note.value(),
@@ -228,11 +238,7 @@ impl MidiMessage {
     }
 
     /// Create a validated NoteOff message.
-    pub fn note_off(
-        channel: MidiChannel,
-        note: MidiNote,
-        velocity: Velocity,
-    ) -> Self {
+    pub fn note_off(channel: MidiChannel, note: MidiNote, velocity: Velocity) -> Self {
         Self::NoteOff {
             channel: channel.value(),
             note: note.value(),
@@ -241,11 +247,7 @@ impl MidiMessage {
     }
 
     /// Create a validated ControlChange message.
-    pub fn control_change(
-        channel: MidiChannel,
-        controller: ControllerNumber,
-        value: u8,
-    ) -> Self {
+    pub fn control_change(channel: MidiChannel, controller: ControllerNumber, value: u8) -> Self {
         Self::ControlChange {
             channel: channel.value(),
             controller: controller.value(),
@@ -382,10 +384,7 @@ mod tests {
         );
 
         let err = MidiNote::try_from(128).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "MIDI note 128 out of range (valid: 0-127)"
-        );
+        assert_eq!(err.to_string(), "MIDI note 128 out of range (valid: 0-127)");
 
         let err = Velocity::try_from(200).unwrap_err();
         assert_eq!(
