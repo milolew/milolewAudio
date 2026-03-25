@@ -435,6 +435,51 @@ impl AppData {
         }
     }
 
+    // -- MIDI file loading --
+
+    /// Load a parsed MIDI clip into the first available MIDI track.
+    /// Creates a ClipState for the UI and sends InstallMidiClip to the engine.
+    fn load_midi_clip_into_track(&mut self, clip: ma_core::midi_clip::MidiClip, name: &str) {
+        use crate::types::track::TrackKind;
+
+        // Find first MIDI track
+        let midi_track = self.tracks.iter().find(|t| t.kind == TrackKind::Midi);
+        let track_id = match midi_track {
+            Some(t) => t.id,
+            None => {
+                log::warn!("No MIDI track available — cannot load clip");
+                return;
+            }
+        };
+
+        let clip_id = ClipId::new();
+        let duration = clip.duration_ticks();
+        let arc_clip = std::sync::Arc::new(clip);
+
+        // Add clip to UI state
+        let clip_state = ClipState {
+            id: clip_id,
+            track_id,
+            start_tick: 0, // place at timeline start
+            duration_ticks: duration,
+            name: name.to_string(),
+            notes: Vec::new(), // UI note display populated separately
+        };
+        self.clips.push(clip_state);
+
+        // Send to engine (Real only — Mock has no audio graph)
+        if let EngineMode::Real { bridge, .. } = &mut self.engine {
+            bridge.send_command(ma_core::EngineCommand::InstallMidiClip {
+                track_id,
+                clip_id,
+                clip: arc_clip,
+                start_tick: 0,
+            });
+        }
+
+        log::info!("Loaded MIDI clip '{name}' into track {track_id:?}");
+    }
+
     // -- Poll engine responses --
 
     fn poll_engine(&mut self) {
@@ -791,8 +836,14 @@ impl Model for AppData {
                 if let Some(entry) = self.browser.entries.get(*index).cloned() {
                     if entry.is_dir {
                         self.browser.enter_dir(entry.path);
+                    } else if entry.is_midi() {
+                        match crate::file_loader::load_midi_file(&entry.path) {
+                            Ok(clip) => self.load_midi_clip_into_track(clip, &entry.name),
+                            Err(e) => log::warn!("Failed to load MIDI file: {e}"),
+                        }
+                    } else if entry.is_audio() {
+                        log::info!("Audio file loading planned for next iteration");
                     }
-                    // File activation (loading) will be handled in a future iteration
                 }
             }
             AppEvent::BrowserSetFilter(filter) => {

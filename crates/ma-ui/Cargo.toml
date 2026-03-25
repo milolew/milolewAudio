@@ -16,6 +16,7 @@ env_logger = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 dirs = "5"
+midly = "0.5"
 
 [dev-dependencies]
 pretty_assertions = "1"
