@@ -364,7 +364,8 @@ impl View for TrackLane {
 
         for clip in app.clips.iter().filter(|c| c.track_id == track.id) {
             let is_clip_selected = arrangement.selected_clips.contains(&clip.id);
-            draw_clip(canvas, clip, &clip_params, is_clip_selected);
+            let peak_cache = app.audio_peaks.get(&clip.id).map(|arc| arc.as_ref());
+            draw_clip(canvas, clip, &clip_params, is_clip_selected, peak_cache);
         }
 
         // -- Live recording waveform --
@@ -530,6 +531,9 @@ mod tests {
             duration_ticks: duration,
             name: format!("Clip {id}"),
             notes: Vec::new(),
+            audio_file: None,
+            audio_length_samples: None,
+            audio_sample_rate: None,
         }
     }
 
