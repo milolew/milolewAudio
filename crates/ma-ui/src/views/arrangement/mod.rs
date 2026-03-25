@@ -409,7 +409,10 @@ impl View for TrackLane {
                         if let Some(track) = app.tracks.get(self.track_index) {
                             let meter = app.mixer.get_meter(track.id);
                             let peak = meter.peak_l.max(meter.peak_r);
-                            self.recording_peaks.push((app.transport.position, peak));
+                            // Cap at ~30 min of recording at 60fps (108_000 entries ≈ 1.6 MB)
+                            if self.recording_peaks.len() < 108_000 {
+                                self.recording_peaks.push((app.transport.position, peak));
+                            }
                         }
                     } else if self.was_recording {
                         self.recording_peaks.clear();

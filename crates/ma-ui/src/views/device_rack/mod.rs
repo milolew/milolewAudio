@@ -32,13 +32,14 @@ impl DeviceRackView {
             // L→R device chain (demo data — will be replaced by AppData lens)
             HStack::new(cx, |cx| {
                 let demo_devices = demo_device_chain();
+                let device_count = demo_devices.len();
                 for (idx, device) in demo_devices.into_iter().enumerate() {
                     DeviceSlot::new(cx, idx, device)
                         .width(Pixels(140.0))
                         .height(Pixels(120.0));
 
                     // Arrow separator between devices (not after last)
-                    if idx < 2 {
+                    if idx + 1 < device_count {
                         Label::new(cx, "\u{2192}").class("chain-arrow");
                     }
                 }
