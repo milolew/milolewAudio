@@ -34,6 +34,12 @@ pub enum EngineCommand {
         solo: bool,
     },
 
+    // Recording
+    ArmTrack {
+        track_id: TrackId,
+        armed: bool,
+    },
+
     // MIDI preview (live playing from UI)
     NoteOn {
         channel: u8,

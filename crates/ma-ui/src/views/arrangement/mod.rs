@@ -82,6 +82,20 @@ impl ArrangementView {
                             .width(Stretch(1.0))
                             .class("track-row");
                         }
+
+                        // "+ Add Track" buttons
+                        HStack::new(cx, |cx| {
+                            Button::new(cx, |cx| Label::new(cx, "+ Audio"))
+                                .on_press(|cx| cx.emit(AppEvent::AddTrack(TrackKind::Audio)))
+                                .class("add-track-btn");
+
+                            Button::new(cx, |cx| Label::new(cx, "+ MIDI"))
+                                .on_press(|cx| cx.emit(AppEvent::AddTrack(TrackKind::Midi)))
+                                .class("add-track-btn");
+                        })
+                        .height(Pixels(32.0))
+                        .width(Pixels(HEADER_WIDTH))
+                        .class("add-track-row");
                     })
                     .width(Stretch(1.0))
                     .height(Stretch(1.0))
@@ -102,7 +116,7 @@ impl View for ArrangementView {
 // TrackHeader — left panel showing track name, color, and kind
 // ---------------------------------------------------------------------------
 
-/// Track header with color bar, name, and type indicator.
+/// Track header with color bar, name, type indicator, record arm, and delete button.
 struct TrackHeader {
     track_index: usize,
 }
@@ -110,6 +124,24 @@ struct TrackHeader {
 impl TrackHeader {
     fn new(cx: &mut Context, track_index: usize) -> Handle<'_, Self> {
         Self { track_index }.build(cx, |_cx| {})
+    }
+
+    /// Hit-test the record arm button area (top-right corner, 20x16 px).
+    fn is_in_arm_button(bounds: BoundingBox, x: f32, y: f32, scale: f32) -> bool {
+        let btn_w = 20.0 * scale;
+        let btn_h = 16.0 * scale;
+        let btn_x = bounds.x + bounds.w - btn_w - 4.0 * scale;
+        let btn_y = bounds.y + 4.0 * scale;
+        x >= btn_x && x <= btn_x + btn_w && y >= btn_y && y <= btn_y + btn_h
+    }
+
+    /// Hit-test the delete button area (top-right corner, below arm button).
+    fn is_in_delete_button(bounds: BoundingBox, x: f32, y: f32, scale: f32) -> bool {
+        let btn_w = 20.0 * scale;
+        let btn_h = 16.0 * scale;
+        let btn_x = bounds.x + bounds.w - btn_w - 4.0 * scale;
+        let btn_y = bounds.y + 24.0 * scale;
+        x >= btn_x && x <= btn_x + btn_w && y >= btn_y && y <= btn_y + btn_h
     }
 }
 
@@ -132,17 +164,18 @@ impl View for TrackHeader {
         };
 
         let is_selected = app.arrangement.selected_track == Some(track.id);
+        let is_armed = track.record_armed;
         let [r, g, b] = track.color;
 
-        // -- Background --
+        // -- Background (red tint when record-armed) --
         let bg_alpha = if is_selected { 50 } else { 30 };
+        let (bg_r, bg_g, bg_b) = if is_armed {
+            (60 + bg_alpha, 30 + bg_alpha, 30 + bg_alpha)
+        } else {
+            (38 + bg_alpha, 38 + bg_alpha, 42 + bg_alpha)
+        };
         let mut bg_paint = vg::Paint::default();
-        bg_paint.set_color(vg::Color::from_argb(
-            255,
-            38 + bg_alpha,
-            38 + bg_alpha,
-            42 + bg_alpha,
-        ));
+        bg_paint.set_color(vg::Color::from_argb(255, bg_r, bg_g, bg_b));
         bg_paint.set_style(vg::PaintStyle::Fill);
         bg_paint.set_anti_alias(true);
         canvas.draw_rect(
@@ -203,6 +236,53 @@ impl View for TrackHeader {
         let name_y = bounds.y + bounds.h * 0.65;
         canvas.draw_str(&track.name, (text_x, name_y), &name_font, &name_paint);
 
+        // -- Record arm button (top-right "R") --
+        let btn_w = 20.0 * scale;
+        let btn_h = 16.0 * scale;
+        let arm_x = bounds.x + bounds.w - btn_w - 4.0 * scale;
+        let arm_y = bounds.y + 4.0 * scale;
+
+        let mut arm_bg = vg::Paint::default();
+        if is_armed {
+            arm_bg.set_color(vg::Color::from_argb(255, 200, 50, 50));
+        } else {
+            arm_bg.set_color(vg::Color::from_argb(255, 60, 60, 60));
+        }
+        arm_bg.set_style(vg::PaintStyle::Fill);
+        arm_bg.set_anti_alias(true);
+        let arm_rect = vg::Rect::from_xywh(arm_x, arm_y, btn_w, btn_h);
+        canvas.draw_round_rect(arm_rect, 3.0 * scale, 3.0 * scale, &arm_bg);
+
+        let mut arm_text_paint = vg::Paint::default();
+        arm_text_paint.set_color(vg::Color::from_argb(255, 255, 255, 255));
+        arm_text_paint.set_anti_alias(true);
+        let arm_font = vg::Font::default();
+        canvas.draw_str(
+            "R",
+            (arm_x + 5.0 * scale, arm_y + 12.0 * scale),
+            &arm_font,
+            &arm_text_paint,
+        );
+
+        // -- Delete button ("X") --
+        let del_y = bounds.y + 24.0 * scale;
+        let mut del_bg = vg::Paint::default();
+        del_bg.set_color(vg::Color::from_argb(255, 60, 60, 60));
+        del_bg.set_style(vg::PaintStyle::Fill);
+        del_bg.set_anti_alias(true);
+        let del_rect = vg::Rect::from_xywh(arm_x, del_y, btn_w, btn_h);
+        canvas.draw_round_rect(del_rect, 3.0 * scale, 3.0 * scale, &del_bg);
+
+        let mut del_text_paint = vg::Paint::default();
+        del_text_paint.set_color(vg::Color::from_argb(180, 200, 200, 200));
+        del_text_paint.set_anti_alias(true);
+        canvas.draw_str(
+            "X",
+            (arm_x + 5.0 * scale, del_y + 12.0 * scale),
+            &arm_font,
+            &del_text_paint,
+        );
+
         // -- Bottom separator line --
         let mut sep_paint = vg::Paint::default();
         sep_paint.set_color(vg::Color::from_argb(255, 50, 50, 50));
@@ -226,9 +306,20 @@ impl View for TrackHeader {
     fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
         event.map(|window_event, meta| {
             if let WindowEvent::MouseDown(MouseButton::Left) = window_event {
+                let cursor_x = cx.mouse().cursor_x;
+                let cursor_y = cx.mouse().cursor_y;
+                let bounds = cx.bounds();
+                let scale = cx.scale_factor();
+
                 if let Some(app) = cx.data::<AppData>() {
                     if let Some(track) = app.tracks.get(self.track_index) {
-                        cx.emit(AppEvent::SelectTrack(track.id));
+                        if Self::is_in_arm_button(bounds, cursor_x, cursor_y, scale) {
+                            cx.emit(AppEvent::ToggleRecordArm(track.id));
+                        } else if Self::is_in_delete_button(bounds, cursor_x, cursor_y, scale) {
+                            cx.emit(AppEvent::RemoveTrack(track.id));
+                        } else {
+                            cx.emit(AppEvent::SelectTrack(track.id));
+                        }
                     }
                 }
                 meta.consume();

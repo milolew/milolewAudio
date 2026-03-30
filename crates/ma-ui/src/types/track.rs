@@ -25,6 +25,7 @@ pub struct TrackState {
     pub pan: f32,
     pub mute: bool,
     pub solo: bool,
+    pub record_armed: bool,
     pub color: [u8; 3],
 }
 
@@ -38,6 +39,7 @@ impl TrackState {
             pan: 0.0,
             mute: false,
             solo: false,
+            record_armed: false,
             color,
         }
     }
@@ -51,6 +53,7 @@ impl TrackState {
             pan: 0.0,
             mute: false,
             solo: false,
+            record_armed: false,
             color,
         }
     }

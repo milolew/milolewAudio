@@ -3,6 +3,7 @@
 use vizia::prelude::*;
 
 use crate::app_data::{ActiveView, AppData, AppEvent};
+use crate::types::track::TrackKind;
 use crate::views::arrangement::ArrangementView;
 use crate::views::browser_view::BrowserView;
 use crate::views::mixer_view::MixerView;
@@ -91,5 +92,23 @@ impl RootView {
 impl View for RootView {
     fn element(&self) -> Option<&'static str> {
         Some("root-view")
+    }
+
+    fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
+        event.map(|window_event, meta| {
+            if let WindowEvent::KeyDown(code, _) = window_event {
+                let modifiers = cx.modifiers();
+                if modifiers.contains(Modifiers::CTRL) && code == &Code::KeyT {
+                    // Ctrl+T → add audio track, Ctrl+Shift+T → add MIDI track
+                    let kind = if modifiers.contains(Modifiers::SHIFT) {
+                        TrackKind::Midi
+                    } else {
+                        TrackKind::Audio
+                    };
+                    cx.emit(AppEvent::AddTrack(kind));
+                    meta.consume();
+                }
+            }
+        });
     }
 }
