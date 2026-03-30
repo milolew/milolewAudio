@@ -121,8 +121,9 @@ impl RealEngineBridge {
         }
 
         // Always send a transport update with current atomic playhead
-        let playhead_samples = self.handle.playhead_position.load(Ordering::Relaxed);
-        let is_recording = self.handle.is_recording.load(Ordering::Relaxed);
+        // ORDERING: Acquire for cross-thread state (audio thread writes with Release)
+        let playhead_samples = self.handle.playhead_position.load(Ordering::Acquire);
+        let is_recording = self.handle.is_recording.load(Ordering::Acquire);
 
         out.push(EngineResponse::TransportUpdate {
             position: self.samples_to_ticks(playhead_samples),

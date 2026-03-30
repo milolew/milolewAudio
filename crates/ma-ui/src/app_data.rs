@@ -847,7 +847,15 @@ impl AppData {
             self.transport.record_start_position = None;
         }
 
+        // TODO: Recreate ring buffer pair and reinstall producer in TrackNode
+        // to enable subsequent recordings on the same track. Currently, recording
+        // is a one-shot operation per track per engine session because the ring
+        // buffer consumer is consumed by the disk I/O thread.
         log::info!("Recording complete: clip '{clip_name}' on track {track_id:?}");
+        log::warn!(
+            "Track {track_id:?} cannot record again until engine restart \
+             (ring buffer consumer consumed)"
+        );
     }
 
     // -- Project save/load/export --
@@ -1204,6 +1212,9 @@ impl AppData {
             }
             AppEvent::SetTempo(bpm) => {
                 self.send_command(EngineCommand::SetTempo(*bpm));
+                if let EngineMode::Real { bridge, .. } = &mut self.engine {
+                    bridge.set_tempo(*bpm);
+                }
             }
             AppEvent::SetPosition(tick) => {
                 self.send_command(EngineCommand::SetPosition(*tick));
@@ -1217,6 +1228,7 @@ impl AppData {
             }
             AppEvent::ToggleLoop => {
                 self.transport.loop_enabled = !self.transport.loop_enabled;
+                self.send_loop_to_engine();
             }
             AppEvent::ToggleMetronome => {
                 self.transport.metronome_enabled = !self.transport.metronome_enabled;
@@ -1228,6 +1240,7 @@ impl AppData {
                 self.transport.loop_start = *start;
                 self.transport.loop_end = *end;
                 self.transport.loop_enabled = true;
+                self.send_loop_to_engine();
             }
             _ => {}
         }
@@ -1269,7 +1282,16 @@ impl AppData {
             }
 
             for (track_id, track_name) in &armed_tracks {
-                let safe_name = track_name.replace(' ', "_");
+                let safe_name: String = track_name
+                    .chars()
+                    .map(|c| {
+                        if c.is_alphanumeric() || c == '-' || c == '_' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
                 let path = recording_dir.join(format!("{safe_name}_{timestamp}.wav"));
                 bridge.start_recording_for_track(*track_id, path, 2, sample_rate);
             }
@@ -1291,6 +1313,27 @@ impl AppData {
 
         // StopRecording command is sent BEFORE Stop in engine
         self.send_command(EngineCommand::StopRecord);
+    }
+
+    /// Send current loop region state to the audio engine.
+    fn send_loop_to_engine(&mut self) {
+        let sample_rate = match &self.engine {
+            EngineMode::Real { bridge, .. } => bridge.sample_rate() as f64,
+            EngineMode::Mock { .. } => 48000.0,
+        };
+        let tempo = self.transport.tempo;
+        let start = ma_core::time::ticks_to_samples(self.transport.loop_start, tempo, sample_rate)
+            .unwrap_or(0);
+        let end = ma_core::time::ticks_to_samples(self.transport.loop_end, tempo, sample_rate)
+            .unwrap_or(0);
+
+        if let EngineMode::Real { bridge, .. } = &mut self.engine {
+            bridge.send_command(ma_core::commands::EngineCommand::SetLoop {
+                start,
+                end,
+                enabled: self.transport.loop_enabled,
+            });
+        }
     }
 
     fn dispatch_piano_roll(&mut self, event: &AppEvent) {
