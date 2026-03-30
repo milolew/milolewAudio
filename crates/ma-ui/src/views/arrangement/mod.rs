@@ -33,7 +33,7 @@ use crate::types::track::{ClipState, TrackKind};
 use crate::widgets::timeline_ruler::TimelineRuler;
 
 use self::clip_interaction::{hit_test_clip_zone, ClipHitZone, ClipInteraction, DRAG_THRESHOLD};
-use self::clip_renderer::{draw_clip, ClipDrawParams};
+use self::clip_renderer::{draw_clip, draw_ghost_clip, ClipDrawParams};
 use self::grid::{draw_grid, GridParams};
 use self::live_waveform::{draw_recording_waveform, WaveformDrawParams};
 use self::playhead::{draw_loop_region, draw_playhead};
@@ -396,6 +396,41 @@ impl View for TrackLane {
             let is_clip_selected = arrangement.selected_clips.contains(&clip.id);
             let peak_cache = app.audio_peaks.get(&clip.id).map(|arc| arc.as_ref());
             draw_clip(canvas, clip, &clip_params, is_clip_selected, peak_cache);
+        }
+
+        // -- Ghost clips during drag --
+        if let ClipInteraction::MovingClips { delta_tick, .. } = &arrangement.interaction {
+            if *delta_tick != 0 {
+                for clip in app.clips.iter().filter(|c| {
+                    arrangement.selected_clips.contains(&c.id) && c.track_id == track.id
+                }) {
+                    let peak_cache = app.audio_peaks.get(&clip.id).map(|arc| arc.as_ref());
+                    draw_ghost_clip(canvas, clip, &clip_params, *delta_tick, peak_cache);
+                }
+            }
+        }
+
+        // -- Resize preview --
+        if let ClipInteraction::ResizingClip {
+            clip_id,
+            original_start,
+            original_duration,
+            ..
+        } = &arrangement.interaction
+        {
+            if let Some(clip) = app
+                .clips
+                .iter()
+                .find(|c| c.id == *clip_id && c.track_id == track.id)
+            {
+                let resized = ClipState {
+                    start_tick: *original_start,
+                    duration_ticks: *original_duration,
+                    ..clip.clone()
+                };
+                let peak_cache = app.audio_peaks.get(clip_id).map(|arc| arc.as_ref());
+                draw_clip(canvas, &resized, &clip_params, true, peak_cache);
+            }
         }
 
         // -- Live recording waveform --

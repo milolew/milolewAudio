@@ -5,6 +5,7 @@ use vizia::vg;
 
 use ma_audio_engine::peak_cache::PeakCache;
 
+use crate::types::time::Tick;
 use crate::types::track::ClipState;
 
 /// Parameters for drawing clips within a track lane.
@@ -258,5 +259,30 @@ fn draw_audio_waveform(
         canvas.draw_line((x, y_min), (x, y_max), &wave_paint);
     }
 
+    canvas.restore();
+}
+
+/// Draw a ghost clip at a shifted position (50% opacity) during drag.
+pub fn draw_ghost_clip(
+    canvas: &Canvas,
+    clip: &ClipState,
+    params: &ClipDrawParams,
+    delta_tick: Tick,
+    peak_cache: Option<&PeakCache>,
+) {
+    let shifted = ClipState {
+        start_tick: clip.start_tick + delta_tick,
+        ..clip.clone()
+    };
+    canvas.save();
+    let layer_rect = vg::Rect::from_xywh(
+        params.bounds.x,
+        params.bounds.y,
+        params.bounds.w,
+        params.bounds.h,
+    );
+    canvas.save_layer_alpha(layer_rect, 128);
+    draw_clip(canvas, &shifted, params, false, peak_cache);
+    canvas.restore();
     canvas.restore();
 }
