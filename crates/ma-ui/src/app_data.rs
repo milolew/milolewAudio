@@ -1397,6 +1397,9 @@ impl AppData {
                 delta_tick,
                 delta_track_index,
             } => {
+                if self.tracks.is_empty() {
+                    return;
+                }
                 let selected: Vec<ClipId> = self
                     .arrangement
                     .selected_clips
@@ -1445,20 +1448,36 @@ impl AppData {
                     let old_track_id = self.clips[idx].track_id;
                     self.remove_clip_from_engine(*clip_id, old_track_id);
 
-                    let mut new_clip = self.clips[idx].clone();
-                    new_clip.start_tick = *new_start;
-                    new_clip.duration_ticks = *new_duration;
+                    let old = &self.clips[idx];
 
-                    // For MIDI clips: trim notes outside new range
-                    if new_clip.audio_file.is_none() {
-                        let clip_end = new_clip.duration_ticks;
-                        new_clip.notes.retain(|n| n.start_tick < clip_end);
-                        for note in &mut new_clip.notes {
-                            if note.start_tick + note.duration_ticks > clip_end {
-                                note.duration_ticks = clip_end - note.start_tick;
-                            }
-                        }
-                    }
+                    // For MIDI clips: trim notes outside new range (immutable)
+                    let trimmed_notes = if old.audio_file.is_none() {
+                        let clip_end = *new_duration;
+                        old.notes
+                            .iter()
+                            .filter(|n| n.start_tick < clip_end)
+                            .map(|n| {
+                                let dur = if n.start_tick + n.duration_ticks > clip_end {
+                                    clip_end - n.start_tick
+                                } else {
+                                    n.duration_ticks
+                                };
+                                Note {
+                                    duration_ticks: dur,
+                                    ..*n
+                                }
+                            })
+                            .collect()
+                    } else {
+                        old.notes.clone()
+                    };
+
+                    let new_clip = ClipState {
+                        start_tick: *new_start,
+                        duration_ticks: *new_duration,
+                        notes: trimmed_notes,
+                        ..old.clone()
+                    };
 
                     self.clips[idx] = new_clip;
                     self.install_clip_in_engine(*clip_id);
@@ -1489,41 +1508,71 @@ impl AppData {
 
                     self.remove_clip_from_engine(clip_id, clip.track_id);
 
-                    // Left half: keep original ID, shorten duration
                     let left_duration = playhead - clip.start_tick;
-                    let mut left = clip.clone();
-                    left.duration_ticks = left_duration;
-                    if left.audio_file.is_none() {
-                        left.notes.retain(|n| n.start_tick < left_duration);
-                        for note in &mut left.notes {
-                            if note.start_tick + note.duration_ticks > left_duration {
-                                note.duration_ticks = left_duration - note.start_tick;
-                            }
-                        }
-                    }
 
-                    // Right half: new ID, starts at playhead
+                    // Left half: keep original ID, shorten duration (immutable)
+                    let left_notes = if clip.audio_file.is_none() {
+                        clip.notes
+                            .iter()
+                            .filter(|n| n.start_tick < left_duration)
+                            .map(|n| {
+                                let dur = if n.start_tick + n.duration_ticks > left_duration {
+                                    left_duration - n.start_tick
+                                } else {
+                                    n.duration_ticks
+                                };
+                                Note {
+                                    duration_ticks: dur,
+                                    ..*n
+                                }
+                            })
+                            .collect()
+                    } else {
+                        clip.notes.clone()
+                    };
+                    let left = ClipState {
+                        duration_ticks: left_duration,
+                        notes: left_notes,
+                        ..clip.clone()
+                    };
+
+                    // Right half: new ID, starts at playhead (immutable)
                     let right_id = ClipId::new();
-                    let mut right = clip.clone();
-                    right.id = right_id;
-                    right.start_tick = playhead;
-                    right.duration_ticks = clip_end - playhead;
-                    right.name = format!("{} (R)", clip.name);
-                    if right.audio_file.is_none() {
-                        // Shift notes to clip-local coordinates and trim
-                        right
-                            .notes
-                            .retain(|n| n.start_tick + n.duration_ticks > left_duration);
-                        for note in &mut right.notes {
-                            if note.start_tick < left_duration {
-                                let overshoot = left_duration - note.start_tick;
-                                note.start_tick = 0;
-                                note.duration_ticks = note.duration_ticks.saturating_sub(overshoot);
-                            } else {
-                                note.start_tick -= left_duration;
-                            }
-                        }
-                    }
+                    let right_notes = if clip.audio_file.is_none() {
+                        clip.notes
+                            .iter()
+                            .filter_map(|n| {
+                                let note_end = n.start_tick + n.duration_ticks;
+                                if note_end <= left_duration {
+                                    return None; // note entirely in left half
+                                }
+                                let (new_start, new_dur) = if n.start_tick < left_duration {
+                                    let overshoot = left_duration - n.start_tick;
+                                    (0, n.duration_ticks.saturating_sub(overshoot))
+                                } else {
+                                    (n.start_tick - left_duration, n.duration_ticks)
+                                };
+                                if new_dur == 0 {
+                                    return None; // filter zero-duration notes
+                                }
+                                Some(Note {
+                                    start_tick: new_start,
+                                    duration_ticks: new_dur,
+                                    ..*n
+                                })
+                            })
+                            .collect()
+                    } else {
+                        clip.notes.clone()
+                    };
+                    let right = ClipState {
+                        id: right_id,
+                        start_tick: playhead,
+                        duration_ticks: clip_end - playhead,
+                        name: format!("{} (R)", clip.name),
+                        notes: right_notes,
+                        ..clip.clone()
+                    };
 
                     self.clips[idx] = left;
                     self.install_clip_in_engine(clip_id);
@@ -1620,7 +1669,7 @@ impl AppData {
                 self.arrangement.clipboard = ClipClipboard::from_clips(&selected_clips, &track_map);
             }
             AppEvent::PasteClips => {
-                if self.arrangement.clipboard.is_empty() {
+                if self.arrangement.clipboard.is_empty() || self.tracks.is_empty() {
                     return;
                 }
                 let playhead = self.transport.position;
@@ -1673,14 +1722,31 @@ impl AppData {
     }
 
     /// Remove a clip from the audio engine.
+    ///
+    /// Sends the appropriate removal command based on clip type:
+    /// - MIDI clips: `RemoveMidiClipFromPlayer` via RT ring buffer (consumed by command_processor)
+    /// - Audio clips: `RemoveClip` via topology channel
     fn remove_clip_from_engine(&mut self, clip_id: ClipId, track_id: TrackId) {
-        if let EngineMode::Real { bridge, .. } = &self.engine {
-            bridge
-                .send_topology_command(ma_core::TopologyCommand::RemoveClip { track_id, clip_id });
-            bridge.send_topology_command(ma_core::TopologyCommand::RemoveMidiClip {
-                track_id,
-                clip_id,
-            });
+        let is_audio = self
+            .clips
+            .iter()
+            .find(|c| c.id == clip_id)
+            .map(|c| c.audio_file.is_some())
+            .unwrap_or(false);
+
+        if let EngineMode::Real { bridge, .. } = &mut self.engine {
+            if is_audio {
+                bridge.send_topology_command(ma_core::TopologyCommand::RemoveClip {
+                    track_id,
+                    clip_id,
+                });
+            } else {
+                // Use RT command for MIDI — topology channel has no consumer yet
+                bridge.send_command(ma_core::EngineCommand::RemoveMidiClipFromPlayer {
+                    track_id,
+                    clip_id,
+                });
+            }
         }
     }
 
@@ -1696,18 +1762,26 @@ impl AppData {
             let data = self.audio_data.get(&clip_id).map(Arc::clone);
             if let Some(data) = data {
                 let length_samples = clip.audio_length_samples.unwrap_or(0) as i64;
+                // Infer channel count from data length / sample count
+                let total_samples = data.len();
+                let channels = if length_samples > 0 {
+                    (total_samples as i64 / length_samples).max(1) as usize
+                } else {
+                    2
+                };
                 if let EngineMode::Real { bridge, .. } = &self.engine {
                     bridge.send_topology_command(ma_core::TopologyCommand::LoadClip {
                         track_id: clip.track_id,
                         clip_id: clip.id,
                         data,
-                        channels: 2,
+                        channels,
                         start_sample: 0,
                         length_samples,
                     });
                 }
             }
-        } else if !clip.notes.is_empty() {
+        } else if clip.audio_file.is_none() {
+            // MIDI clip — install even if notes are empty (to clear stale engine state)
             use ma_core::parameters::{MidiEvent, MidiMessage};
             let events: Vec<MidiEvent> = clip
                 .notes

@@ -627,10 +627,12 @@ impl View for TrackLane {
                 } else {
                     Vec::new()
                 };
-                for ev in events {
-                    cx.emit(ev);
+                if !events.is_empty() {
+                    for ev in events {
+                        cx.emit(ev);
+                    }
+                    cx.needs_redraw();
                 }
-                cx.needs_redraw();
             }
             WindowEvent::MouseUp(MouseButton::Left) => {
                 let shift = cx.modifiers().contains(Modifiers::SHIFT);
@@ -811,12 +813,17 @@ fn compute_mouse_move_events(
             let tick_end = tick1.max(tick2);
 
             let track_height = arrangement.track_height;
-            let ruler_offset = RULER_HEIGHT + arrangement.scroll_y;
             let y_min = origin_y.min(my);
             let y_max = origin_y.max(my);
 
-            let t_start = ((y_min - ruler_offset) / track_height).floor().max(0.0) as usize;
-            let t_end = ((y_max - ruler_offset) / track_height).floor().max(0.0) as usize;
+            // Derive arrangement top Y from this lane's known position
+            let arrangement_top_y = bounds.y - (track_index as f32 * track_height);
+            let t_start = ((y_min - arrangement_top_y) / track_height)
+                .floor()
+                .max(0.0) as usize;
+            let t_end = ((y_max - arrangement_top_y) / track_height)
+                .floor()
+                .max(0.0) as usize;
 
             let track_map: Vec<_> = app
                 .tracks

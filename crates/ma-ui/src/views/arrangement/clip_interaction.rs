@@ -3,7 +3,7 @@
 //! States: Idle → PendingDrag → MovingClips / ResizingClip / (click)
 //!         Idle → RubberBand → (commit selection)
 
-use crate::types::time::Tick;
+use crate::types::time::{Tick, PPQN};
 use crate::types::track::{ClipId, ClipState, TrackId};
 
 /// Pixel threshold before a click becomes a drag.
@@ -12,8 +12,8 @@ pub const DRAG_THRESHOLD: f32 = 4.0;
 /// Pixel width of the resize hit zone at clip edges.
 pub const EDGE_HIT_ZONE: f32 = 6.0;
 
-/// Minimum clip duration after resize (1/16 note ≈ 60 ticks).
-pub const MIN_CLIP_DURATION: Tick = 60;
+/// Minimum clip duration after resize (1/64 note at 960 PPQN).
+pub const MIN_CLIP_DURATION: Tick = PPQN / 16;
 
 /// Which edge of a clip is being resized.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
