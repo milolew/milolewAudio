@@ -233,6 +233,7 @@ pub enum AppEvent {
 
     // -- Recording --
     ToggleRecordArm(TrackId),
+    ToggleInputMonitoring(TrackId),
 
     // -- Arrangement clip operations --
     SelectClips(ClipSelection),
@@ -568,6 +569,13 @@ impl AppData {
                 armed: *armed,
             }),
             EngineCommand::StopRecord => Some(CoreCommand::StopRecording),
+            EngineCommand::SetInputMonitoring {
+                track_id,
+                monitoring,
+            } => Some(CoreCommand::SetInputMonitoring {
+                track_id: *track_id,
+                monitoring: *monitoring,
+            }),
             _ => None,
         }
     }
@@ -964,6 +972,7 @@ impl AppData {
                 solo: false,
                 color: track_file.color,
                 record_armed: false,
+                input_monitoring: false,
             });
 
             for clip_file in &track_file.clips {
@@ -1701,6 +1710,23 @@ impl Model for AppData {
                     self.send_command(EngineCommand::ArmTrack {
                         track_id: *track_id,
                         armed,
+                    });
+                }
+            }
+
+            // Recording: input monitoring toggle
+            AppEvent::ToggleInputMonitoring(track_id) => {
+                let new_monitoring =
+                    if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
+                        track.input_monitoring = !track.input_monitoring;
+                        Some(track.input_monitoring)
+                    } else {
+                        None
+                    };
+                if let Some(monitoring) = new_monitoring {
+                    self.send_command(EngineCommand::SetInputMonitoring {
+                        track_id: *track_id,
+                        monitoring,
                     });
                 }
             }

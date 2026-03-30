@@ -275,6 +275,19 @@ impl View for TrackHeader {
         }
         canvas.draw_circle((arm_cx, arm_cy), arm_radius, &arm_paint);
 
+        // -- Input monitoring indicator ("M" below arm circle) --
+        let mon_x = arm_cx - 5.0 * scale;
+        let mon_y = arm_cy + 16.0 * scale;
+        let mut mon_paint = vg::Paint::default();
+        mon_paint.set_anti_alias(true);
+        if track.input_monitoring {
+            mon_paint.set_color(vg::Color::from_argb(255, 80, 200, 120));
+        } else {
+            mon_paint.set_color(vg::Color::from_argb(80, 120, 120, 120));
+        }
+        let mon_font = vg::Font::default();
+        canvas.draw_str("M", (mon_x, mon_y), &mon_font, &mon_paint);
+
         // -- Bottom separator line --
         let mut sep_paint = vg::Paint::default();
         sep_paint.set_color(vg::Color::from_argb(255, 50, 50, 50));
@@ -312,8 +325,16 @@ impl View for TrackHeader {
                         let dy = cursor_y - arm_cy;
                         let hit_arm = (dx * dx + dy * dy) < (12.0 * scale * 12.0 * scale);
 
+                        // Check if click is in monitoring area ("M" below arm)
+                        let mon_cy = arm_cy + 12.0 * scale;
+                        let dm_x = cursor_x - arm_cx;
+                        let dm_y = cursor_y - mon_cy;
+                        let hit_mon = dm_x.abs() < 10.0 * scale && dm_y.abs() < 8.0 * scale;
+
                         if hit_arm {
                             cx.emit(AppEvent::ToggleRecordArm(track.id));
+                        } else if hit_mon {
+                            cx.emit(AppEvent::ToggleInputMonitoring(track.id));
                         } else {
                             cx.emit(AppEvent::SelectTrack(track.id));
                         }

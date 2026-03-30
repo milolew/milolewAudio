@@ -180,6 +180,22 @@ pub fn process_commands(
                 }
             }
 
+            // ── Input monitoring ──
+            EngineCommand::SetInputMonitoring {
+                track_id,
+                monitoring,
+            } => {
+                if let Some(track) = find_track(tracks, track_id) {
+                    if let Some(idx) = track.track_node_graph_index {
+                        if let Some(track_node) = graph.node_downcast_mut::<TrackNode>(idx) {
+                            track_node
+                                .input_monitoring
+                                .store(monitoring, Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
+
             // ── Lifecycle ──
             EngineCommand::Shutdown => {
                 shutdown = true;

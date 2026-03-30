@@ -38,6 +38,10 @@ pub enum EngineCommand {
         track_id: TrackId,
         armed: bool,
     },
+    SetInputMonitoring {
+        track_id: TrackId,
+        monitoring: bool,
+    },
 
     // MIDI preview (live playing from UI)
     NoteOn {
