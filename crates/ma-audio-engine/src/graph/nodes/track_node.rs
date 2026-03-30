@@ -67,6 +67,13 @@ pub struct TrackNode {
     /// Set to `true` when samples are dropped during recording due to ring buffer overflow.
     /// Checked and reset by the audio callback after processing.
     pub record_overflow: AtomicBool,
+
+    /// Whether this track has an input connection (from InputNode).
+    /// Input-enabled tracks receive live audio; non-input tracks receive player output.
+    has_input: bool,
+
+    /// Input monitoring — when enabled, live audio passes through even when not recording.
+    pub input_monitoring: Arc<AtomicBool>,
 }
 
 impl TrackNode {
@@ -75,6 +82,7 @@ impl TrackNode {
         track_id: TrackId,
         record_producer: Option<rtrb::Producer<f32>>,
     ) -> Self {
+        let has_input = record_producer.is_some();
         Self {
             id,
             track_id,
@@ -86,6 +94,8 @@ impl TrackNode {
             is_recording: Arc::new(AtomicBool::new(false)),
             record_producer,
             record_overflow: AtomicBool::new(false),
+            has_input,
+            input_monitoring: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -166,23 +176,26 @@ impl AudioNode for TrackNode {
             return;
         }
 
-        // Copy input to output
-        if let Some(input) = inputs.first() {
+        let monitoring = self.input_monitoring.load(Ordering::Relaxed);
+        let recording =
+            self.record_armed.load(Ordering::Relaxed) && self.is_recording.load(Ordering::Relaxed);
+
+        // For input-enabled tracks: only pass live audio when monitoring or recording.
+        // For non-input tracks: always copy player output.
+        if self.has_input && !monitoring && !recording {
+            output.clear();
+        } else if let Some(input) = inputs.first() {
             output.copy_from(input);
         } else {
             output.clear();
             return;
         }
 
-        // Push to recording buffer if armed and recording
-        // ORDERING: Relaxed OK — record_armed is single-value eventual consistency;
-        // is_recording is written with Release but read here on audio thread (self-read OK with Relaxed)
-        if self.record_armed.load(Ordering::Relaxed) && self.is_recording.load(Ordering::Relaxed) {
-            // Record the raw input (pre-fader) for clean recording
+        // Push to recording buffer if armed and recording (pre-fader)
+        if recording {
             if let Some(input) = inputs.first() {
                 let dropped = self.push_to_record_buffer(input);
                 if dropped > 0 {
-                    // ORDERING: Relaxed OK — single-value flag, read/reset in audio callback
                     self.record_overflow.store(true, Ordering::Relaxed);
                 }
             }

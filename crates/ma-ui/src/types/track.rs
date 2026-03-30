@@ -26,6 +26,10 @@ pub struct TrackState {
     pub mute: bool,
     pub solo: bool,
     pub color: [u8; 3],
+    #[serde(default)]
+    pub record_armed: bool,
+    #[serde(default)]
+    pub input_monitoring: bool,
 }
 
 impl TrackState {
@@ -39,6 +43,8 @@ impl TrackState {
             mute: false,
             solo: false,
             color,
+            record_armed: false,
+            input_monitoring: false,
         }
     }
 
@@ -52,6 +58,8 @@ impl TrackState {
             mute: false,
             solo: false,
             color,
+            record_armed: false,
+            input_monitoring: false,
         }
     }
 }

@@ -108,6 +108,49 @@ impl View for ArrangementView {
     fn element(&self) -> Option<&'static str> {
         Some("arrangement-view")
     }
+
+    fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
+        event.map(|window_event, meta| {
+            if let WindowEvent::KeyDown(code, _) = window_event {
+                let modifiers = cx.modifiers();
+                match code {
+                    Code::KeyE if modifiers.contains(Modifiers::CTRL) => {
+                        cx.emit(AppEvent::SplitClipAtPlayhead);
+                        meta.consume();
+                    }
+                    Code::KeyD if modifiers.contains(Modifiers::CTRL) => {
+                        cx.emit(AppEvent::DuplicateSelectedClips);
+                        meta.consume();
+                    }
+                    Code::KeyC if modifiers.contains(Modifiers::CTRL) => {
+                        cx.emit(AppEvent::CopySelectedClips);
+                        meta.consume();
+                    }
+                    Code::KeyV if modifiers.contains(Modifiers::CTRL) => {
+                        cx.emit(AppEvent::PasteClips);
+                        meta.consume();
+                    }
+                    Code::Delete | Code::Backspace => {
+                        cx.emit(AppEvent::DeleteSelectedClips);
+                        meta.consume();
+                    }
+                    Code::KeyL => {
+                        cx.emit(AppEvent::ToggleLoop);
+                        meta.consume();
+                    }
+                    Code::Equal | Code::NumpadAdd => {
+                        cx.emit(AppEvent::ZoomArrangement(1.2));
+                        meta.consume();
+                    }
+                    Code::Minus | Code::NumpadSubtract => {
+                        cx.emit(AppEvent::ZoomArrangement(1.0 / 1.2));
+                        meta.consume();
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +258,36 @@ impl View for TrackHeader {
         let name_y = bounds.y + bounds.h * 0.65;
         canvas.draw_str(&track.name, (text_x, name_y), &name_font, &name_paint);
 
+        // -- Record arm indicator (red circle, top-right) --
+        let arm_radius = 6.0 * scale;
+        let arm_cx = bounds.x + bounds.w - 16.0 * scale;
+        let arm_cy = bounds.y + 14.0 * scale;
+        let mut arm_paint = vg::Paint::default();
+        arm_paint.set_anti_alias(true);
+
+        if track.record_armed {
+            arm_paint.set_color(vg::Color::from_argb(255, 220, 50, 50));
+            arm_paint.set_style(vg::PaintStyle::Fill);
+        } else {
+            arm_paint.set_color(vg::Color::from_argb(120, 180, 60, 60));
+            arm_paint.set_style(vg::PaintStyle::Stroke);
+            arm_paint.set_stroke_width(1.5 * scale);
+        }
+        canvas.draw_circle((arm_cx, arm_cy), arm_radius, &arm_paint);
+
+        // -- Input monitoring indicator ("M" below arm circle) --
+        let mon_x = arm_cx - 5.0 * scale;
+        let mon_y = arm_cy + 16.0 * scale;
+        let mut mon_paint = vg::Paint::default();
+        mon_paint.set_anti_alias(true);
+        if track.input_monitoring {
+            mon_paint.set_color(vg::Color::from_argb(255, 80, 200, 120));
+        } else {
+            mon_paint.set_color(vg::Color::from_argb(80, 120, 120, 120));
+        }
+        let mon_font = vg::Font::default();
+        canvas.draw_str("M", (mon_x, mon_y), &mon_font, &mon_paint);
+
         // -- Bottom separator line --
         let mut sep_paint = vg::Paint::default();
         sep_paint.set_color(vg::Color::from_argb(255, 50, 50, 50));
@@ -240,9 +313,34 @@ impl View for TrackHeader {
             if let WindowEvent::MouseDown(MouseButton::Left) = window_event {
                 if let Some(app) = cx.data::<AppData>() {
                     if let Some(track) = app.tracks.get(self.track_index) {
-                        cx.emit(AppEvent::SelectTrack(track.id));
+                        let bounds = cx.bounds();
+                        let scale = cx.scale_factor();
+                        let cursor_x = cx.mouse().cursor_x;
+                        let cursor_y = cx.mouse().cursor_y;
+
+                        // Check if click is in arm button area (top-right circle)
+                        let arm_cx = bounds.x + bounds.w - 16.0 * scale;
+                        let arm_cy = bounds.y + 14.0 * scale;
+                        let dx = cursor_x - arm_cx;
+                        let dy = cursor_y - arm_cy;
+                        let hit_arm = (dx * dx + dy * dy) < (12.0 * scale * 12.0 * scale);
+
+                        // Check if click is in monitoring area ("M" below arm)
+                        let mon_cy = arm_cy + 12.0 * scale;
+                        let dm_x = cursor_x - arm_cx;
+                        let dm_y = cursor_y - mon_cy;
+                        let hit_mon = dm_x.abs() < 10.0 * scale && dm_y.abs() < 8.0 * scale;
+
+                        if hit_arm {
+                            cx.emit(AppEvent::ToggleRecordArm(track.id));
+                        } else if hit_mon {
+                            cx.emit(AppEvent::ToggleInputMonitoring(track.id));
+                        } else {
+                            cx.emit(AppEvent::SelectTrack(track.id));
+                        }
                     }
                 }
+                cx.needs_redraw();
                 meta.consume();
             }
         });
@@ -454,11 +552,12 @@ impl View for TrackLane {
                     let is_recording = app.transport.is_recording;
                     if is_recording {
                         if let Some(track) = app.tracks.get(self.track_index) {
-                            let meter = app.mixer.get_meter(track.id);
-                            let peak = meter.peak_l.max(meter.peak_r);
-                            // Cap at ~30 min of recording at 60fps (108_000 entries ~ 1.6 MB)
-                            if self.recording_peaks.len() < 108_000 {
-                                self.recording_peaks.push((app.transport.position, peak));
+                            if track.record_armed {
+                                let meter = app.mixer.get_meter(track.id);
+                                let peak = meter.peak_l.max(meter.peak_r);
+                                if self.recording_peaks.len() < 108_000 {
+                                    self.recording_peaks.push((app.transport.position, peak));
+                                }
                             }
                         }
                     } else if self.was_recording {
@@ -475,9 +574,16 @@ impl View for TrackLane {
                 let modifiers = cx.modifiers();
 
                 if modifiers.contains(Modifiers::CTRL) {
-                    // Ctrl + scroll = zoom
+                    // Ctrl + scroll = zoom centered on cursor
                     let factor = if *dy > 0.0 { 1.1 } else { 0.9 };
-                    cx.emit(AppEvent::ZoomArrangement(factor));
+                    if let Some(app) = cx.data::<AppData>() {
+                        let bounds = cx.bounds();
+                        let cursor_tick = app.arrangement.x_to_tick(cx.mouse().cursor_x - bounds.x);
+                        cx.emit(AppEvent::ZoomArrangementAt {
+                            factor,
+                            cursor_tick,
+                        });
+                    }
                 } else {
                     // Regular scroll: vertical with dy, horizontal with dx or shift+dy
                     if modifiers.contains(Modifiers::SHIFT) {

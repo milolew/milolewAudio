@@ -69,6 +69,11 @@ pub enum EngineCommand {
     /// Stop recording on all armed tracks.
     StopRecording,
 
+    /// Enable or disable input monitoring for a track.
+    /// When enabled, live audio input passes through the track to output
+    /// even when not recording.
+    SetInputMonitoring { track_id: TrackId, monitoring: bool },
+
     // ── Clip management (forwarded from topology processor) ────
     /// Install a MIDI clip into a track's MidiPlayerNode.
     /// The `Arc<MidiClip>` is safe on the audio thread because the UI always holds

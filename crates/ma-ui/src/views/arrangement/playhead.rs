@@ -32,7 +32,7 @@ pub fn draw_loop_region(canvas: &Canvas, bounds: BoundingBox, loop_start_x: f32,
     }
 
     let mut paint = vg::Paint::default();
-    paint.set_color(vg::Color::from_argb(15, 80, 160, 255));
+    paint.set_color(vg::Color::from_argb(20, 255, 200, 40));
     paint.set_style(vg::PaintStyle::Fill);
     paint.set_anti_alias(true);
 

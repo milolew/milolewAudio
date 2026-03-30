@@ -129,6 +129,10 @@ pub enum AppEvent {
     ToggleLoop,
     ToggleMetronome,
     ToggleFollowPlayhead,
+    SetLoopRegion {
+        start: Tick,
+        end: Tick,
+    },
 
     // -- View switching --
     SwitchView(ActiveView),
@@ -153,6 +157,10 @@ pub enum AppEvent {
     ScrollArrangementX(f64),
     ScrollArrangementY(f32),
     ZoomArrangement(f64),
+    ZoomArrangementAt {
+        factor: f64,
+        cursor_tick: Tick,
+    },
 
     // -- Piano roll editing --
     TransposeSelectedNotes {
@@ -222,6 +230,10 @@ pub enum AppEvent {
     BrowserActivate(usize),
     BrowserSetFilter(BrowserFilter),
     ToggleBrowser,
+
+    // -- Recording --
+    ToggleRecordArm(TrackId),
+    ToggleInputMonitoring(TrackId),
 
     // -- Arrangement clip operations --
     SelectClips(ClipSelection),
@@ -552,6 +564,18 @@ impl AppData {
                 track_id: *track_id,
                 solo: *solo,
             }),
+            EngineCommand::ArmTrack { track_id, armed } => Some(CoreCommand::ArmTrack {
+                track_id: *track_id,
+                armed: *armed,
+            }),
+            EngineCommand::StopRecord => Some(CoreCommand::StopRecording),
+            EngineCommand::SetInputMonitoring {
+                track_id,
+                monitoring,
+            } => Some(CoreCommand::SetInputMonitoring {
+                track_id: *track_id,
+                monitoring: *monitoring,
+            }),
             _ => None,
         }
     }
@@ -723,10 +747,115 @@ impl AppData {
                 EngineResponse::CpuLoad(load) => {
                     self.mixer.cpu_load = *load;
                 }
+                EngineResponse::RecordingComplete {
+                    track_id,
+                    path,
+                    total_samples,
+                } => {
+                    self.handle_recording_complete(*track_id, path.clone(), *total_samples);
+                }
+                EngineResponse::RecordingError { track_id, error } => {
+                    log::error!("Recording error on track {track_id:?}: {error}");
+                }
             }
         }
         // Return the buffer for reuse next frame
         self.response_buf = responses;
+
+        // Follow playhead: scroll to keep it visible during playback
+        if self.arrangement.follow_playhead
+            && (self.transport.is_playing || self.transport.is_recording)
+        {
+            let viewport_ticks = 800.0 / self.arrangement.zoom_x.max(0.001);
+            let threshold = self.arrangement.scroll_x + viewport_ticks * 0.8;
+            let playhead = self.transport.position as f64;
+
+            if playhead > threshold {
+                self.arrangement.scroll_x = (playhead - viewport_ticks * 0.3).max(0.0);
+            }
+        }
+    }
+
+    fn handle_recording_complete(
+        &mut self,
+        track_id: TrackId,
+        path: std::path::PathBuf,
+        _total_samples: u64,
+    ) {
+        let record_start = self.transport.record_start_position.unwrap_or(0);
+
+        // Decode the recorded WAV file
+        let decoded = match crate::file_loader::load_audio_file(&path) {
+            Ok(d) => d,
+            Err(e) => {
+                log::error!("Failed to decode recording {}: {e}", path.display());
+                return;
+            }
+        };
+
+        let clip_id = ClipId::new();
+        let data: Arc<[f32]> = Arc::from(decoded.samples.into_boxed_slice());
+
+        // Build peak cache for waveform rendering
+        let peak_cache = ma_audio_engine::peak_cache::build_peak_cache(
+            &data,
+            decoded.channels,
+            decoded.length_samples,
+        );
+
+        // Compute duration in ticks from sample length
+        let sample_rate = decoded.sample_rate as f64;
+        let length_seconds = decoded.length_samples as f64 / sample_rate;
+        let length_ticks = (length_seconds * self.transport.tempo / 60.0 * PPQN as f64) as i64;
+
+        let clip_name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Recording".into());
+
+        let clip_state = ClipState {
+            id: clip_id,
+            track_id,
+            start_tick: record_start,
+            duration_ticks: length_ticks.max(1),
+            name: clip_name.clone(),
+            notes: Vec::new(),
+            audio_file: Some(path.to_string_lossy().to_string()),
+            audio_length_samples: Some(decoded.length_samples),
+            audio_sample_rate: Some(decoded.sample_rate),
+        };
+
+        self.clips.push(clip_state);
+        self.audio_peaks.insert(clip_id, Arc::new(peak_cache));
+        self.audio_data.insert(clip_id, Arc::clone(&data));
+
+        // Install in engine for playback
+        if let EngineMode::Real { bridge, .. } = &self.engine {
+            bridge.send_topology_command(ma_core::TopologyCommand::LoadClip {
+                track_id,
+                clip_id,
+                data,
+                channels: decoded.channels,
+                start_sample: 0,
+                length_samples: decoded.length_samples as i64,
+            });
+        }
+
+        // Clear recording metadata for this track
+        self.transport.recording_tracks.retain(|id| *id != track_id);
+        if self.transport.recording_tracks.is_empty() {
+            self.transport.record_start_position = None;
+        }
+
+        // TODO: Recreate ring buffer pair and reinstall producer in TrackNode
+        // to enable subsequent recordings on the same track. Currently, recording
+        // is a one-shot operation per track per engine session because the ring
+        // buffer consumer is consumed by the disk I/O thread.
+        log::info!("Recording complete: clip '{clip_name}' on track {track_id:?}");
+        log::warn!(
+            "Track {track_id:?} cannot record again until engine restart \
+             (ring buffer consumer consumed)"
+        );
     }
 
     // -- Project save/load/export --
@@ -850,6 +979,8 @@ impl AppData {
                 mute: track_file.muted,
                 solo: false,
                 color: track_file.color,
+                record_armed: false,
+                input_monitoring: false,
             });
 
             for clip_file in &track_file.clips {
@@ -1066,19 +1197,24 @@ impl AppData {
     fn dispatch_transport(&mut self, event: &AppEvent) {
         match event {
             AppEvent::Play => {
+                self.arrangement.follow_playhead = true;
                 self.send_command(EngineCommand::Play);
             }
             AppEvent::Stop => {
+                self.stop_recording_if_active();
                 self.send_command(EngineCommand::Stop);
             }
             AppEvent::Record => {
-                self.send_command(EngineCommand::Record);
+                self.start_recording();
             }
             AppEvent::Pause => {
                 self.send_command(EngineCommand::Pause);
             }
             AppEvent::SetTempo(bpm) => {
                 self.send_command(EngineCommand::SetTempo(*bpm));
+                if let EngineMode::Real { bridge, .. } = &mut self.engine {
+                    bridge.set_tempo(*bpm);
+                }
             }
             AppEvent::SetPosition(tick) => {
                 self.send_command(EngineCommand::SetPosition(*tick));
@@ -1092,6 +1228,7 @@ impl AppData {
             }
             AppEvent::ToggleLoop => {
                 self.transport.loop_enabled = !self.transport.loop_enabled;
+                self.send_loop_to_engine();
             }
             AppEvent::ToggleMetronome => {
                 self.transport.metronome_enabled = !self.transport.metronome_enabled;
@@ -1099,7 +1236,103 @@ impl AppData {
             AppEvent::ToggleFollowPlayhead => {
                 self.transport.follow_playhead = !self.transport.follow_playhead;
             }
+            AppEvent::SetLoopRegion { start, end } => {
+                self.transport.loop_start = *start;
+                self.transport.loop_end = *end;
+                self.transport.loop_enabled = true;
+                self.send_loop_to_engine();
+            }
             _ => {}
+        }
+    }
+
+    fn start_recording(&mut self) {
+        self.arrangement.follow_playhead = true;
+
+        let armed_tracks: Vec<_> = self
+            .tracks
+            .iter()
+            .filter(|t| t.record_armed)
+            .map(|t| (t.id, t.name.clone()))
+            .collect();
+
+        if armed_tracks.is_empty() {
+            log::warn!("Record pressed but no tracks are armed");
+            return;
+        }
+
+        self.transport.record_start_position = Some(self.transport.position);
+        self.transport.recording_tracks = armed_tracks.iter().map(|(id, _)| *id).collect();
+
+        // Send StartRecording to engine (sets is_recording on armed track nodes)
+        self.send_command(EngineCommand::Record);
+
+        // Start disk recording for each armed track
+        if let EngineMode::Real { bridge, .. } = &mut self.engine {
+            let sample_rate = bridge.sample_rate();
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            let recording_dir = std::path::PathBuf::from("recordings");
+            if let Err(e) = std::fs::create_dir_all(&recording_dir) {
+                log::error!("Failed to create recordings directory: {e}");
+                return;
+            }
+
+            for (track_id, track_name) in &armed_tracks {
+                let safe_name: String = track_name
+                    .chars()
+                    .map(|c| {
+                        if c.is_alphanumeric() || c == '-' || c == '_' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                let path = recording_dir.join(format!("{safe_name}_{timestamp}.wav"));
+                bridge.start_recording_for_track(*track_id, path, 2, sample_rate);
+            }
+        }
+    }
+
+    fn stop_recording_if_active(&mut self) {
+        if !self.transport.is_recording {
+            return;
+        }
+
+        let recording_tracks = std::mem::take(&mut self.transport.recording_tracks);
+
+        if let EngineMode::Real { bridge, .. } = &self.engine {
+            for track_id in &recording_tracks {
+                bridge.stop_recording_for_track(*track_id);
+            }
+        }
+
+        // StopRecording command is sent BEFORE Stop in engine
+        self.send_command(EngineCommand::StopRecord);
+    }
+
+    /// Send current loop region state to the audio engine.
+    fn send_loop_to_engine(&mut self) {
+        let sample_rate = match &self.engine {
+            EngineMode::Real { bridge, .. } => bridge.sample_rate() as f64,
+            EngineMode::Mock { .. } => 48000.0,
+        };
+        let tempo = self.transport.tempo;
+        let start = ma_core::time::ticks_to_samples(self.transport.loop_start, tempo, sample_rate)
+            .unwrap_or(0);
+        let end = ma_core::time::ticks_to_samples(self.transport.loop_end, tempo, sample_rate)
+            .unwrap_or(0);
+
+        if let EngineMode::Real { bridge, .. } = &mut self.engine {
+            bridge.send_command(ma_core::commands::EngineCommand::SetLoop {
+                start,
+                end,
+                enabled: self.transport.loop_enabled,
+            });
         }
     }
 
@@ -1380,7 +1613,8 @@ impl Model for AppData {
             | AppEvent::SetPosition(_)
             | AppEvent::ToggleLoop
             | AppEvent::ToggleMetronome
-            | AppEvent::ToggleFollowPlayhead => {
+            | AppEvent::ToggleFollowPlayhead
+            | AppEvent::SetLoopRegion { .. } => {
                 self.dispatch_transport(app_event);
             }
 
@@ -1506,15 +1740,69 @@ impl Model for AppData {
                 }
             }
 
+            // Recording: arm toggle
+            AppEvent::ToggleRecordArm(track_id) => {
+                let new_armed =
+                    if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
+                        track.record_armed = !track.record_armed;
+                        Some(track.record_armed)
+                    } else {
+                        None
+                    };
+                if let Some(armed) = new_armed {
+                    self.send_command(EngineCommand::ArmTrack {
+                        track_id: *track_id,
+                        armed,
+                    });
+                }
+            }
+
+            // Recording: input monitoring toggle
+            AppEvent::ToggleInputMonitoring(track_id) => {
+                let new_monitoring =
+                    if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
+                        track.input_monitoring = !track.input_monitoring;
+                        Some(track.input_monitoring)
+                    } else {
+                        None
+                    };
+                if let Some(monitoring) = new_monitoring {
+                    self.send_command(EngineCommand::SetInputMonitoring {
+                        track_id: *track_id,
+                        monitoring,
+                    });
+                }
+            }
+
             // Arrangement scroll/zoom
             AppEvent::ScrollArrangementX(dx) => {
                 self.arrangement.scroll_x = (self.arrangement.scroll_x + dx).max(0.0);
+                self.arrangement.follow_playhead = false;
             }
             AppEvent::ScrollArrangementY(dy) => {
                 self.arrangement.scroll_y += dy;
             }
             AppEvent::ZoomArrangement(factor) => {
-                self.arrangement.zoom_x = (self.arrangement.zoom_x * factor).clamp(0.001, 1.0);
+                // Zoom around viewport center (for +/- keys)
+                let old_zoom = self.arrangement.zoom_x;
+                let new_zoom = (old_zoom * factor).clamp(0.001, 1.0);
+                let viewport_center = self.arrangement.scroll_x + 400.0 / old_zoom.max(0.001);
+                let pixel_offset = (viewport_center - self.arrangement.scroll_x) * old_zoom;
+                self.arrangement.zoom_x = new_zoom;
+                self.arrangement.scroll_x =
+                    (viewport_center - pixel_offset / new_zoom.max(0.001)).max(0.0);
+            }
+            AppEvent::ZoomArrangementAt {
+                factor,
+                cursor_tick,
+            } => {
+                // Zoom centered on cursor position
+                let old_zoom = self.arrangement.zoom_x;
+                let new_zoom = (old_zoom * factor).clamp(0.001, 1.0);
+                let pixel_offset = (*cursor_tick as f64 - self.arrangement.scroll_x) * old_zoom;
+                self.arrangement.zoom_x = new_zoom;
+                self.arrangement.scroll_x =
+                    (*cursor_tick as f64 - pixel_offset / new_zoom.max(0.001)).max(0.0);
             }
 
             // Piano roll note editing

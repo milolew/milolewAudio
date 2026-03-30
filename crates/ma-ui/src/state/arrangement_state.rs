@@ -63,6 +63,8 @@ pub struct ArrangementState {
     pub interaction: ClipInteraction,
     /// Clipboard for copy/paste.
     pub clipboard: ClipClipboard,
+    /// Auto-scroll to keep the playhead visible during playback.
+    pub follow_playhead: bool,
 }
 
 impl Default for ArrangementState {
@@ -77,6 +79,7 @@ impl Default for ArrangementState {
             snap_grid: SnapGrid::default(),
             interaction: ClipInteraction::default(),
             clipboard: ClipClipboard::default(),
+            follow_playhead: true,
         }
     }
 }

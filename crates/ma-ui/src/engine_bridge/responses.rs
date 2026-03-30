@@ -1,5 +1,7 @@
 //! Responses sent from the audio engine back to the UI via SPSC ring buffer.
 
+use std::path::PathBuf;
+
 use crate::types::time::Tick;
 use crate::types::track::TrackId;
 
@@ -28,4 +30,14 @@ pub enum EngineResponse {
 
     /// Audio thread CPU load (0.0 - 1.0).
     CpuLoad(f32),
+
+    /// Recording finalized — WAV file written to disk.
+    RecordingComplete {
+        track_id: TrackId,
+        path: PathBuf,
+        total_samples: u64,
+    },
+
+    /// Recording error (disk I/O failure).
+    RecordingError { track_id: TrackId, error: String },
 }
