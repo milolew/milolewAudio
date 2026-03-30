@@ -26,7 +26,7 @@ use crate::engine_bridge::commands::EngineCommand;
 use crate::engine_bridge::mock_engine::{spawn_mock_engine, MockEngineHandle};
 use crate::engine_bridge::real_bridge::RealEngineBridge;
 use crate::engine_bridge::responses::EngineResponse;
-use crate::state::arrangement_state::ArrangementState;
+use crate::state::arrangement_state::{ArrangementState, ClipSelection};
 use crate::state::browser_state::{BrowserFilter, BrowserState};
 use crate::state::mixer_state::MixerState;
 use crate::state::piano_roll_state::PianoRollState;
@@ -34,6 +34,9 @@ use crate::state::transport_state::TransportState;
 use crate::types::midi::{Note, NoteId};
 use crate::types::time::{QuantizeGrid, Tick, PPQN};
 use crate::types::track::{ClipId, ClipState, TrackId, TrackKind, TrackState};
+use crate::views::arrangement::clip_interaction::ClipInteraction;
+use crate::views::arrangement::clipboard::ClipClipboard;
+use crate::views::arrangement::snap::SnapGrid;
 
 /// Maximum number of undo actions to keep in history.
 const UNDO_MAX_DEPTH: usize = 100;
@@ -195,6 +198,25 @@ pub enum AppEvent {
     BrowserActivate(usize),
     BrowserSetFilter(BrowserFilter),
     ToggleBrowser,
+
+    // -- Arrangement clip operations --
+    SelectClips(ClipSelection),
+    UpdateClipInteraction(ClipInteraction),
+    MoveClips {
+        delta_tick: Tick,
+        delta_track_index: i32,
+    },
+    ResizeClip {
+        clip_id: ClipId,
+        new_start: Tick,
+        new_duration: Tick,
+    },
+    SplitClipAtPlayhead,
+    DuplicateSelectedClips,
+    DeleteSelectedClips,
+    CopySelectedClips,
+    PasteClips,
+    SetSnapGrid(SnapGrid),
 }
 
 /// Create a deterministic UUID for demo data (stable across restarts).
@@ -1423,6 +1445,463 @@ impl Model for AppData {
                     self.active_view = ActiveView::Arrangement;
                 }
             }
+
+            // Arrangement clip operations
+            AppEvent::SelectClips(_)
+            | AppEvent::UpdateClipInteraction(_)
+            | AppEvent::MoveClips { .. }
+            | AppEvent::ResizeClip { .. }
+            | AppEvent::SplitClipAtPlayhead
+            | AppEvent::DuplicateSelectedClips
+            | AppEvent::DeleteSelectedClips
+            | AppEvent::CopySelectedClips
+            | AppEvent::PasteClips
+            | AppEvent::SetSnapGrid(_) => {
+                self.dispatch_clip_operations(app_event);
+            }
         });
+    }
+}
+
+impl AppData {
+    /// Dispatch arrangement clip operation events.
+    fn dispatch_clip_operations(&mut self, event: &AppEvent) {
+        match event {
+            AppEvent::SelectClips(selection) => {
+                self.arrangement.selected_clips = selection.clone();
+            }
+            AppEvent::UpdateClipInteraction(interaction) => {
+                self.arrangement.interaction = interaction.clone();
+            }
+            AppEvent::SetSnapGrid(grid) => {
+                self.arrangement.snap_grid = *grid;
+            }
+            AppEvent::MoveClips {
+                delta_tick,
+                delta_track_index,
+            } => {
+                if self.tracks.is_empty() {
+                    return;
+                }
+                let selected: Vec<ClipId> = self
+                    .arrangement
+                    .selected_clips
+                    .clips
+                    .iter()
+                    .copied()
+                    .collect();
+                for clip_id in selected {
+                    if let Some(idx) = self.clips.iter().position(|c| c.id == clip_id) {
+                        let clip = &self.clips[idx];
+                        let new_start = (clip.start_tick + delta_tick).max(0);
+
+                        // Compute target track from delta index
+                        let current_track_idx = self
+                            .tracks
+                            .iter()
+                            .position(|t| t.id == clip.track_id)
+                            .unwrap_or(0) as i32;
+                        let target_idx = (current_track_idx + delta_track_index)
+                            .clamp(0, self.tracks.len() as i32 - 1)
+                            as usize;
+                        let new_track_id = self.tracks[target_idx].id;
+
+                        // Remove from engine at old position
+                        self.remove_clip_from_engine(clip_id, clip.track_id);
+
+                        // Update clip state (immutably)
+                        let new_clip = ClipState {
+                            start_tick: new_start,
+                            track_id: new_track_id,
+                            ..self.clips[idx].clone()
+                        };
+                        self.clips[idx] = new_clip;
+
+                        // Reinstall in engine at new position
+                        self.install_clip_in_engine(clip_id);
+                    }
+                }
+            }
+            AppEvent::ResizeClip {
+                clip_id,
+                new_start,
+                new_duration,
+            } => {
+                if let Some(idx) = self.clips.iter().position(|c| c.id == *clip_id) {
+                    let old_track_id = self.clips[idx].track_id;
+                    self.remove_clip_from_engine(*clip_id, old_track_id);
+
+                    let old = &self.clips[idx];
+
+                    // For MIDI clips: trim notes outside new range (immutable)
+                    let trimmed_notes = if old.audio_file.is_none() {
+                        let clip_end = *new_duration;
+                        old.notes
+                            .iter()
+                            .filter(|n| n.start_tick < clip_end)
+                            .map(|n| {
+                                let dur = if n.start_tick + n.duration_ticks > clip_end {
+                                    clip_end - n.start_tick
+                                } else {
+                                    n.duration_ticks
+                                };
+                                Note {
+                                    duration_ticks: dur,
+                                    ..*n
+                                }
+                            })
+                            .collect()
+                    } else {
+                        old.notes.clone()
+                    };
+
+                    let new_clip = ClipState {
+                        start_tick: *new_start,
+                        duration_ticks: *new_duration,
+                        notes: trimmed_notes,
+                        ..old.clone()
+                    };
+
+                    self.clips[idx] = new_clip;
+                    self.install_clip_in_engine(*clip_id);
+                }
+            }
+            AppEvent::SplitClipAtPlayhead => {
+                let playhead = self.transport.position;
+                let selected: Vec<ClipId> = self
+                    .arrangement
+                    .selected_clips
+                    .clips
+                    .iter()
+                    .copied()
+                    .collect();
+                let mut new_right_ids = Vec::new();
+
+                for clip_id in selected {
+                    let Some(idx) = self.clips.iter().position(|c| c.id == clip_id) else {
+                        continue;
+                    };
+                    let clip = self.clips[idx].clone();
+                    let clip_end = clip.start_tick + clip.duration_ticks;
+
+                    // Only split if playhead is strictly inside the clip
+                    if playhead <= clip.start_tick || playhead >= clip_end {
+                        continue;
+                    }
+
+                    self.remove_clip_from_engine(clip_id, clip.track_id);
+
+                    let left_duration = playhead - clip.start_tick;
+
+                    // Left half: keep original ID, shorten duration (immutable)
+                    let left_notes = if clip.audio_file.is_none() {
+                        clip.notes
+                            .iter()
+                            .filter(|n| n.start_tick < left_duration)
+                            .map(|n| {
+                                let dur = if n.start_tick + n.duration_ticks > left_duration {
+                                    left_duration - n.start_tick
+                                } else {
+                                    n.duration_ticks
+                                };
+                                Note {
+                                    duration_ticks: dur,
+                                    ..*n
+                                }
+                            })
+                            .collect()
+                    } else {
+                        clip.notes.clone()
+                    };
+                    let left = ClipState {
+                        duration_ticks: left_duration,
+                        notes: left_notes,
+                        ..clip.clone()
+                    };
+
+                    // Right half: new ID, starts at playhead (immutable)
+                    let right_id = ClipId::new();
+                    let right_notes = if clip.audio_file.is_none() {
+                        clip.notes
+                            .iter()
+                            .filter_map(|n| {
+                                let note_end = n.start_tick + n.duration_ticks;
+                                if note_end <= left_duration {
+                                    return None; // note entirely in left half
+                                }
+                                let (new_start, new_dur) = if n.start_tick < left_duration {
+                                    let overshoot = left_duration - n.start_tick;
+                                    (0, n.duration_ticks.saturating_sub(overshoot))
+                                } else {
+                                    (n.start_tick - left_duration, n.duration_ticks)
+                                };
+                                if new_dur == 0 {
+                                    return None; // filter zero-duration notes
+                                }
+                                Some(Note {
+                                    start_tick: new_start,
+                                    duration_ticks: new_dur,
+                                    ..*n
+                                })
+                            })
+                            .collect()
+                    } else {
+                        clip.notes.clone()
+                    };
+                    let right = ClipState {
+                        id: right_id,
+                        start_tick: playhead,
+                        duration_ticks: clip_end - playhead,
+                        name: format!("{} (R)", clip.name),
+                        notes: right_notes,
+                        ..clip.clone()
+                    };
+
+                    self.clips[idx] = left;
+                    self.install_clip_in_engine(clip_id);
+
+                    new_right_ids.push(right_id);
+                    self.clips.push(right);
+                    self.install_clip_in_engine(right_id);
+                }
+
+                // Select both halves
+                if !new_right_ids.is_empty() {
+                    let mut sel = self.arrangement.selected_clips.clips.clone();
+                    for id in new_right_ids {
+                        sel.insert(id);
+                    }
+                    self.arrangement.selected_clips = ClipSelection { clips: sel };
+                }
+            }
+            AppEvent::DuplicateSelectedClips => {
+                let selected: Vec<ClipId> = self
+                    .arrangement
+                    .selected_clips
+                    .clips
+                    .iter()
+                    .copied()
+                    .collect();
+                let mut new_ids = Vec::new();
+
+                for clip_id in selected {
+                    if let Some(clip) = self.clips.iter().find(|c| c.id == clip_id).cloned() {
+                        let new_id = ClipId::new();
+                        let mut dup = clip.clone();
+                        dup.id = new_id;
+                        dup.start_tick = clip.start_tick + clip.duration_ticks;
+                        dup.name = format!("{} (copy)", clip.name);
+
+                        // New note IDs for MIDI clips
+                        for note in &mut dup.notes {
+                            note.id = self.piano_roll.alloc_note_id();
+                        }
+
+                        // Share audio data
+                        if let Some(peaks) = self.audio_peaks.get(&clip.id).cloned() {
+                            self.audio_peaks.insert(new_id, peaks);
+                        }
+                        if let Some(data) = self.audio_data.get(&clip.id).cloned() {
+                            self.audio_data.insert(new_id, data);
+                        }
+
+                        new_ids.push(new_id);
+                        self.clips.push(dup);
+                        self.install_clip_in_engine(new_id);
+                    }
+                }
+
+                // Select the duplicates
+                self.arrangement.selected_clips = ClipSelection {
+                    clips: new_ids.into_iter().collect(),
+                };
+            }
+            AppEvent::DeleteSelectedClips => {
+                let selected: Vec<ClipId> = self
+                    .arrangement
+                    .selected_clips
+                    .clips
+                    .iter()
+                    .copied()
+                    .collect();
+
+                for clip_id in &selected {
+                    if let Some(clip) = self.clips.iter().find(|c| c.id == *clip_id).cloned() {
+                        self.remove_clip_from_engine(*clip_id, clip.track_id);
+                        self.audio_peaks.remove(clip_id);
+                        self.audio_data.remove(clip_id);
+                    }
+                }
+
+                self.clips.retain(|c| !selected.contains(&c.id));
+                self.arrangement.selected_clips = ClipSelection::default();
+            }
+            AppEvent::CopySelectedClips => {
+                let selected_clips: Vec<ClipState> = self
+                    .clips
+                    .iter()
+                    .filter(|c| self.arrangement.selected_clips.contains(&c.id))
+                    .cloned()
+                    .collect();
+                let track_map: Vec<(TrackId, usize)> = self
+                    .tracks
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| (t.id, i))
+                    .collect();
+                self.arrangement.clipboard = ClipClipboard::from_clips(&selected_clips, &track_map);
+            }
+            AppEvent::PasteClips => {
+                if self.arrangement.clipboard.is_empty() || self.tracks.is_empty() {
+                    return;
+                }
+                let playhead = self.transport.position;
+                let entries = self.arrangement.clipboard.entries.clone();
+                let mut new_ids = Vec::new();
+
+                // Determine base track index from selected track
+                let base_track_idx = self
+                    .arrangement
+                    .selected_track
+                    .and_then(|tid| self.tracks.iter().position(|t| t.id == tid))
+                    .unwrap_or(0) as i32;
+
+                for entry in &entries {
+                    let target_idx = (base_track_idx + entry.track_index_offset)
+                        .clamp(0, self.tracks.len() as i32 - 1)
+                        as usize;
+                    let target_track_id = self.tracks[target_idx].id;
+
+                    let new_id = ClipId::new();
+                    let mut new_clip = entry.clip.clone();
+                    new_clip.id = new_id;
+                    new_clip.track_id = target_track_id;
+                    new_clip.start_tick = playhead + entry.tick_offset;
+
+                    // New note IDs for MIDI clips
+                    for note in &mut new_clip.notes {
+                        note.id = self.piano_roll.alloc_note_id();
+                    }
+
+                    // Share audio data
+                    if let Some(peaks) = self.audio_peaks.get(&entry.clip.id).cloned() {
+                        self.audio_peaks.insert(new_id, peaks);
+                    }
+                    if let Some(data) = self.audio_data.get(&entry.clip.id).cloned() {
+                        self.audio_data.insert(new_id, data);
+                    }
+
+                    new_ids.push(new_id);
+                    self.clips.push(new_clip);
+                    self.install_clip_in_engine(new_id);
+                }
+
+                self.arrangement.selected_clips = ClipSelection {
+                    clips: new_ids.into_iter().collect(),
+                };
+            }
+            _ => {}
+        }
+    }
+
+    /// Remove a clip from the audio engine.
+    ///
+    /// Sends the appropriate removal command based on clip type:
+    /// - MIDI clips: `RemoveMidiClipFromPlayer` via RT ring buffer (consumed by command_processor)
+    /// - Audio clips: `RemoveClip` via topology channel
+    fn remove_clip_from_engine(&mut self, clip_id: ClipId, track_id: TrackId) {
+        let is_audio = self
+            .clips
+            .iter()
+            .find(|c| c.id == clip_id)
+            .map(|c| c.audio_file.is_some())
+            .unwrap_or(false);
+
+        if let EngineMode::Real { bridge, .. } = &mut self.engine {
+            if is_audio {
+                bridge.send_topology_command(ma_core::TopologyCommand::RemoveClip {
+                    track_id,
+                    clip_id,
+                });
+            } else {
+                // Use RT command for MIDI — topology channel has no consumer yet
+                bridge.send_command(ma_core::EngineCommand::RemoveMidiClipFromPlayer {
+                    track_id,
+                    clip_id,
+                });
+            }
+        }
+    }
+
+    /// (Re)install a clip in the audio engine based on its current state.
+    fn install_clip_in_engine(&mut self, clip_id: ClipId) {
+        let clip = match self.clips.iter().find(|c| c.id == clip_id) {
+            Some(c) => c.clone(),
+            None => return,
+        };
+
+        // Prepare engine commands before borrowing engine mutably
+        if clip.audio_file.is_some() {
+            let data = self.audio_data.get(&clip_id).map(Arc::clone);
+            if let Some(data) = data {
+                let length_samples = clip.audio_length_samples.unwrap_or(0) as i64;
+                // Infer channel count from data length / sample count
+                let total_samples = data.len();
+                let channels = if length_samples > 0 {
+                    (total_samples as i64 / length_samples).max(1) as usize
+                } else {
+                    2
+                };
+                if let EngineMode::Real { bridge, .. } = &self.engine {
+                    bridge.send_topology_command(ma_core::TopologyCommand::LoadClip {
+                        track_id: clip.track_id,
+                        clip_id: clip.id,
+                        data,
+                        channels,
+                        start_sample: 0,
+                        length_samples,
+                    });
+                }
+            }
+        } else if clip.audio_file.is_none() {
+            // MIDI clip — install even if notes are empty (to clear stale engine state)
+            use ma_core::parameters::{MidiEvent, MidiMessage};
+            let events: Vec<MidiEvent> = clip
+                .notes
+                .iter()
+                .flat_map(|n| {
+                    [
+                        MidiEvent {
+                            tick: n.start_tick,
+                            message: MidiMessage::NoteOn {
+                                channel: n.channel,
+                                note: n.pitch,
+                                velocity: n.velocity,
+                            },
+                        },
+                        MidiEvent {
+                            tick: n.start_tick + n.duration_ticks,
+                            message: MidiMessage::NoteOff {
+                                channel: n.channel,
+                                note: n.pitch,
+                                velocity: 0,
+                            },
+                        },
+                    ]
+                })
+                .collect();
+            let midi_clip = std::sync::Arc::new(ma_core::midi_clip::MidiClip::new(
+                events,
+                clip.duration_ticks,
+            ));
+            if let EngineMode::Real { bridge, .. } = &mut self.engine {
+                bridge.send_command(ma_core::EngineCommand::InstallMidiClip {
+                    track_id: clip.track_id,
+                    clip_id: clip.id,
+                    clip: midi_clip,
+                    start_tick: clip.start_tick,
+                });
+            }
+        }
     }
 }
