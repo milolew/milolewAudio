@@ -13,26 +13,37 @@
 //! +-------------------+-------------------------------------+
 //! ```
 
+pub mod clip_interaction;
 mod clip_renderer;
 mod grid;
 mod live_waveform;
 mod playhead;
+pub mod selection;
+pub mod snap;
 
 use vizia::prelude::*;
 use vizia::vg;
 
 use crate::app_data::{AppData, AppEvent};
+use crate::state::arrangement_state::ClipSelection;
 use crate::types::time::PPQN;
-use crate::types::track::{ClipId, ClipState, TrackKind};
+#[cfg(test)]
+use crate::types::track::ClipId;
+use crate::types::track::{ClipState, TrackKind};
 use crate::widgets::timeline_ruler::TimelineRuler;
 
+use self::clip_interaction::{hit_test_clip_zone, ClipHitZone, ClipInteraction, DRAG_THRESHOLD};
 use self::clip_renderer::{draw_clip, ClipDrawParams};
 use self::grid::{draw_grid, GridParams};
 use self::live_waveform::{draw_recording_waveform, WaveformDrawParams};
 use self::playhead::{draw_loop_region, draw_playhead};
+use self::selection::{clips_in_rect, SelectionRect};
 
 /// Width of the track header panel in pixels.
 const HEADER_WIDTH: f32 = 180.0;
+
+/// Y offset of the first track row (ruler height).
+const RULER_HEIGHT: f32 = 28.0;
 
 /// Arrangement view — top-level container for timeline and track lanes.
 pub struct ArrangementView;
@@ -53,7 +64,7 @@ impl ArrangementView {
                     .width(Stretch(1.0))
                     .height(Stretch(1.0));
             })
-            .height(Pixels(28.0))
+            .height(Pixels(RULER_HEIGHT))
             .width(Stretch(1.0))
             .class("ruler-row");
 
@@ -95,6 +106,37 @@ impl ArrangementView {
 impl View for ArrangementView {
     fn element(&self) -> Option<&'static str> {
         Some("arrangement-view")
+    }
+
+    fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
+        event.map(|window_event, meta| {
+            if let WindowEvent::KeyDown(code, _) = window_event {
+                let modifiers = cx.modifiers();
+                match code {
+                    Code::KeyE if modifiers.contains(Modifiers::CTRL) => {
+                        cx.emit(AppEvent::SplitClipAtPlayhead);
+                        meta.consume();
+                    }
+                    Code::KeyD if modifiers.contains(Modifiers::CTRL) => {
+                        cx.emit(AppEvent::DuplicateSelectedClips);
+                        meta.consume();
+                    }
+                    Code::KeyC if modifiers.contains(Modifiers::CTRL) => {
+                        cx.emit(AppEvent::CopySelectedClips);
+                        meta.consume();
+                    }
+                    Code::KeyV if modifiers.contains(Modifiers::CTRL) => {
+                        cx.emit(AppEvent::PasteClips);
+                        meta.consume();
+                    }
+                    Code::Delete | Code::Backspace => {
+                        cx.emit(AppEvent::DeleteSelectedClips);
+                        meta.consume();
+                    }
+                    _ => {}
+                }
+            }
+        });
     }
 }
 
@@ -260,28 +302,16 @@ impl TrackLane {
         .build(cx, |_cx| {})
     }
 
-    /// Hit-test: find which clip (if any) is under the given pixel coordinate.
-    fn clip_at_position(
-        app: &AppData,
-        track_index: usize,
-        x: f32,
-        bounds_x: f32,
-    ) -> Option<ClipId> {
-        let track = app.tracks.get(track_index)?;
-        let arrangement = &app.arrangement;
-        let track_clips: Vec<_> = app
-            .clips
+    /// Gather clips for this lane's track.
+    fn track_clips(app: &AppData, track_index: usize) -> Vec<ClipState> {
+        let Some(track) = app.tracks.get(track_index) else {
+            return Vec::new();
+        };
+        app.clips
             .iter()
             .filter(|c| c.track_id == track.id)
             .cloned()
-            .collect();
-        hit_test_clip(
-            &track_clips,
-            arrangement.zoom_x,
-            arrangement.scroll_x,
-            x,
-            bounds_x,
-        )
+            .collect()
     }
 }
 
@@ -383,6 +413,17 @@ impl View for TrackLane {
             );
         }
 
+        // -- Rubber band selection rectangle (draw on this lane if active) --
+        if let ClipInteraction::RubberBand {
+            origin_x,
+            origin_y,
+            current_x,
+            current_y,
+        } = &arrangement.interaction
+        {
+            draw_rubber_band(canvas, *origin_x, *origin_y, *current_x, *current_y, scale);
+        }
+
         // -- Playhead --
         let playhead_x = bounds.x + ((transport.position as f64 - scroll_x) * zoom_x) as f32;
         draw_playhead(canvas, bounds, scale, playhead_x);
@@ -410,7 +451,7 @@ impl View for TrackLane {
                         if let Some(track) = app.tracks.get(self.track_index) {
                             let meter = app.mixer.get_meter(track.id);
                             let peak = meter.peak_l.max(meter.peak_r);
-                            // Cap at ~30 min of recording at 60fps (108_000 entries ≈ 1.6 MB)
+                            // Cap at ~30 min of recording at 60fps (108_000 entries ~ 1.6 MB)
                             if self.recording_peaks.len() < 108_000 {
                                 self.recording_peaks.push((app.transport.position, peak));
                             }
@@ -461,26 +502,115 @@ impl View for TrackLane {
                 meta.consume();
             }
             WindowEvent::MouseDoubleClick(MouseButton::Left) => {
-                // Double-click on a clip opens the piano roll
-                let cursor_x = cx.mouse().cursor_x;
-
+                // Double-click on a clip opens the piano roll (only when idle)
                 if let Some(app) = cx.data::<AppData>() {
-                    if let Some(clip_id) =
-                        Self::clip_at_position(app, self.track_index, cursor_x, cx.bounds().x)
-                    {
-                        cx.emit(AppEvent::OpenPianoRoll(clip_id));
+                    if matches!(app.arrangement.interaction, ClipInteraction::Idle) {
+                        let cursor_x = cx.mouse().cursor_x;
+                        let track_clips = Self::track_clips(app, self.track_index);
+                        if let Some((clip_id, _)) = hit_test_clip_zone(
+                            &track_clips,
+                            app.arrangement.zoom_x,
+                            app.arrangement.scroll_x,
+                            cursor_x,
+                            cx.bounds().x,
+                        ) {
+                            cx.emit(AppEvent::OpenPianoRoll(clip_id));
+                        }
                     }
                 }
-
                 meta.consume();
             }
             WindowEvent::MouseDown(MouseButton::Left) => {
-                // Single click selects the track
-                if let Some(app) = cx.data::<AppData>() {
-                    if let Some(track) = app.tracks.get(self.track_index) {
-                        cx.emit(AppEvent::SelectTrack(track.id));
+                let cursor_x = cx.mouse().cursor_x;
+                let cursor_y = cx.mouse().cursor_y;
+                let bounds = cx.bounds();
+                let shift = cx.modifiers().contains(Modifiers::SHIFT);
+
+                // Extract data from app before emitting events
+                let action = if let Some(app) = cx.data::<AppData>() {
+                    let track = app.tracks.get(self.track_index);
+                    track.map(|t| {
+                        let track_id = t.id;
+                        let track_clips = Self::track_clips(app, self.track_index);
+                        let hit = hit_test_clip_zone(
+                            &track_clips,
+                            app.arrangement.zoom_x,
+                            app.arrangement.scroll_x,
+                            cursor_x,
+                            bounds.x,
+                        );
+                        let click_tick = app.arrangement.x_to_tick(cursor_x - bounds.x);
+                        (track_id, hit, click_tick)
+                    })
+                } else {
+                    None
+                };
+
+                if let Some((track_id, hit, click_tick)) = action {
+                    cx.emit(AppEvent::SelectTrack(track_id));
+
+                    match hit {
+                        Some((clip_id, zone)) => {
+                            cx.emit(AppEvent::UpdateClipInteraction(
+                                ClipInteraction::PendingDrag {
+                                    clip_id,
+                                    track_id,
+                                    mouse_start_x: cursor_x,
+                                    mouse_start_y: cursor_y,
+                                    click_tick,
+                                    hit_zone: zone,
+                                },
+                            ));
+                            cx.capture();
+                        }
+                        None => {
+                            if !shift {
+                                cx.emit(AppEvent::SelectClips(ClipSelection::default()));
+                            }
+                            cx.emit(AppEvent::UpdateClipInteraction(
+                                ClipInteraction::RubberBand {
+                                    origin_x: cursor_x,
+                                    origin_y: cursor_y,
+                                    current_x: cursor_x,
+                                    current_y: cursor_y,
+                                },
+                            ));
+                            cx.capture();
+                        }
                     }
                 }
+                cx.needs_redraw();
+                meta.consume();
+            }
+            WindowEvent::MouseMove(mx, my) => {
+                // Compute events to emit from app state, then drop the borrow
+                // before calling cx.emit() (which needs &mut cx).
+                let events = if let Some(app) = cx.data::<AppData>() {
+                    let bounds = cx.bounds();
+                    compute_mouse_move_events(app, self.track_index, bounds, *mx, *my)
+                } else {
+                    Vec::new()
+                };
+                for ev in events {
+                    cx.emit(ev);
+                }
+                cx.needs_redraw();
+            }
+            WindowEvent::MouseUp(MouseButton::Left) => {
+                let shift = cx.modifiers().contains(Modifiers::SHIFT);
+
+                // Extract events to emit from current interaction state
+                let events = if let Some(app) = cx.data::<AppData>() {
+                    compute_mouse_up_events(app, shift)
+                } else {
+                    Vec::new()
+                };
+                for ev in events {
+                    cx.emit(ev);
+                }
+                cx.emit(AppEvent::UpdateClipInteraction(ClipInteraction::Idle));
+                cx.release();
+                cx.needs_redraw();
                 meta.consume();
             }
             _ => {}
@@ -488,9 +618,265 @@ impl View for TrackLane {
     }
 }
 
+/// Compute events to emit from a MouseMove, without holding &mut cx.
+/// Returns a list of AppEvents that should be emitted after the borrow is dropped.
+fn compute_mouse_move_events(
+    app: &AppData,
+    track_index: usize,
+    bounds: BoundingBox,
+    mx: f32,
+    my: f32,
+) -> Vec<AppEvent> {
+    let mut events = Vec::new();
+
+    match app.arrangement.interaction.clone() {
+        ClipInteraction::PendingDrag {
+            clip_id,
+            mouse_start_x,
+            mouse_start_y,
+            hit_zone,
+            ..
+        } => {
+            let dx = mx - mouse_start_x;
+            let dy = my - mouse_start_y;
+            if dx.abs() > DRAG_THRESHOLD || dy.abs() > DRAG_THRESHOLD {
+                match hit_zone {
+                    ClipHitZone::Body => {
+                        if let Some(clip) = app.clip(clip_id) {
+                            let click_tick = app.arrangement.x_to_tick(mouse_start_x - bounds.x);
+                            let grab_offset = click_tick - clip.start_tick;
+
+                            if !app.arrangement.selected_clips.contains(&clip_id) {
+                                events.push(AppEvent::SelectClips(ClipSelection::select_single(
+                                    clip_id,
+                                )));
+                            }
+
+                            events.push(AppEvent::UpdateClipInteraction(
+                                ClipInteraction::MovingClips {
+                                    anchor_clip_id: clip_id,
+                                    anchor_original_start: clip.start_tick,
+                                    anchor_original_track: clip.track_id,
+                                    grab_offset_tick: grab_offset,
+                                    delta_tick: 0,
+                                    delta_track_index: 0,
+                                },
+                            ));
+                        }
+                    }
+                    ClipHitZone::LeftEdge | ClipHitZone::RightEdge => {
+                        if let Some(clip) = app.clip(clip_id) {
+                            let edge = if hit_zone == ClipHitZone::LeftEdge {
+                                clip_interaction::ClipResizeEdge::Left
+                            } else {
+                                clip_interaction::ClipResizeEdge::Right
+                            };
+                            events.push(AppEvent::UpdateClipInteraction(
+                                ClipInteraction::ResizingClip {
+                                    clip_id,
+                                    edge,
+                                    original_start: clip.start_tick,
+                                    original_duration: clip.duration_ticks,
+                                },
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        ClipInteraction::MovingClips {
+            anchor_clip_id,
+            anchor_original_start,
+            anchor_original_track,
+            grab_offset_tick,
+            ..
+        } => {
+            let raw_tick = app.arrangement.x_to_tick(mx - bounds.x);
+            let beats = app.transport.time_signature.numerator;
+            let snapped = app
+                .arrangement
+                .snap_grid
+                .snap_floor(raw_tick - grab_offset_tick, beats);
+            let delta_tick = snapped - anchor_original_start;
+
+            let mouse_track_idx = track_index as i32;
+            let original_idx = app
+                .tracks
+                .iter()
+                .position(|t| t.id == anchor_original_track)
+                .unwrap_or(0) as i32;
+            let delta_track = mouse_track_idx - original_idx;
+
+            events.push(AppEvent::UpdateClipInteraction(
+                ClipInteraction::MovingClips {
+                    anchor_clip_id,
+                    anchor_original_start,
+                    anchor_original_track,
+                    grab_offset_tick,
+                    delta_tick,
+                    delta_track_index: delta_track,
+                },
+            ));
+        }
+        ClipInteraction::ResizingClip {
+            clip_id,
+            edge,
+            original_start,
+            original_duration,
+        } => {
+            let raw_tick = app.arrangement.x_to_tick(mx - bounds.x);
+            let beats = app.transport.time_signature.numerator;
+
+            let (new_start, new_duration) = match edge {
+                clip_interaction::ClipResizeEdge::Right => {
+                    let snapped_end = app.arrangement.snap_grid.snap(raw_tick, beats);
+                    let dur =
+                        (snapped_end - original_start).max(clip_interaction::MIN_CLIP_DURATION);
+                    (original_start, dur)
+                }
+                clip_interaction::ClipResizeEdge::Left => {
+                    let snapped_start = app.arrangement.snap_grid.snap_floor(raw_tick, beats);
+                    let original_end = original_start + original_duration;
+                    let new_s = snapped_start
+                        .max(0)
+                        .min(original_end - clip_interaction::MIN_CLIP_DURATION);
+                    (new_s, original_end - new_s)
+                }
+            };
+
+            events.push(AppEvent::UpdateClipInteraction(
+                ClipInteraction::ResizingClip {
+                    clip_id,
+                    edge,
+                    original_start: new_start,
+                    original_duration: new_duration,
+                },
+            ));
+        }
+        ClipInteraction::RubberBand {
+            origin_x, origin_y, ..
+        } => {
+            events.push(AppEvent::UpdateClipInteraction(
+                ClipInteraction::RubberBand {
+                    origin_x,
+                    origin_y,
+                    current_x: mx,
+                    current_y: my,
+                },
+            ));
+
+            // Live selection
+            let arrangement = &app.arrangement;
+            let lane_x = bounds.x;
+
+            let tick1 = arrangement.x_to_tick((origin_x - lane_x).max(0.0));
+            let tick2 = arrangement.x_to_tick((mx - lane_x).max(0.0));
+            let tick_start = tick1.min(tick2);
+            let tick_end = tick1.max(tick2);
+
+            let track_height = arrangement.track_height;
+            let ruler_offset = RULER_HEIGHT + arrangement.scroll_y;
+            let y_min = origin_y.min(my);
+            let y_max = origin_y.max(my);
+
+            let t_start = ((y_min - ruler_offset) / track_height).floor().max(0.0) as usize;
+            let t_end = ((y_max - ruler_offset) / track_height).floor().max(0.0) as usize;
+
+            let track_map: Vec<_> = app
+                .tracks
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (t.id, i))
+                .collect();
+
+            let rect = SelectionRect {
+                tick_start,
+                tick_end,
+                track_start: t_start,
+                track_end: t_end,
+            };
+
+            let selected = clips_in_rect(&app.clips, &track_map, &rect);
+            events.push(AppEvent::SelectClips(ClipSelection { clips: selected }));
+        }
+        ClipInteraction::Idle => {}
+    }
+
+    events
+}
+
+/// Compute events to emit from a MouseUp.
+fn compute_mouse_up_events(app: &AppData, shift: bool) -> Vec<AppEvent> {
+    let mut events = Vec::new();
+    match &app.arrangement.interaction {
+        ClipInteraction::PendingDrag { clip_id, .. } => {
+            let clip_id = *clip_id;
+            if shift {
+                events.push(AppEvent::SelectClips(
+                    app.arrangement.selected_clips.toggled(clip_id),
+                ));
+            } else {
+                events.push(AppEvent::SelectClips(ClipSelection::select_single(clip_id)));
+            }
+        }
+        ClipInteraction::MovingClips {
+            delta_tick,
+            delta_track_index,
+            ..
+        } => {
+            if *delta_tick != 0 || *delta_track_index != 0 {
+                events.push(AppEvent::MoveClips {
+                    delta_tick: *delta_tick,
+                    delta_track_index: *delta_track_index,
+                });
+            }
+        }
+        ClipInteraction::ResizingClip {
+            clip_id,
+            original_start,
+            original_duration,
+            ..
+        } => {
+            events.push(AppEvent::ResizeClip {
+                clip_id: *clip_id,
+                new_start: *original_start,
+                new_duration: *original_duration,
+            });
+        }
+        ClipInteraction::RubberBand { .. } | ClipInteraction::Idle => {}
+    }
+    events
+}
+
+/// Draw a rubber-band selection rectangle.
+fn draw_rubber_band(canvas: &Canvas, x1: f32, y1: f32, x2: f32, y2: f32, scale: f32) {
+    let left = x1.min(x2);
+    let top = y1.min(y2);
+    let w = (x2 - x1).abs();
+    let h = (y2 - y1).abs();
+
+    if w < 1.0 || h < 1.0 {
+        return;
+    }
+
+    let rect = vg::Rect::from_xywh(left, top, w, h);
+
+    let mut fill = vg::Paint::default();
+    fill.set_color(vg::Color::from_argb(30, 80, 160, 255));
+    fill.set_style(vg::PaintStyle::Fill);
+    fill.set_anti_alias(true);
+    canvas.draw_rect(rect, &fill);
+
+    let mut stroke = vg::Paint::default();
+    stroke.set_color(vg::Color::from_argb(180, 80, 160, 255));
+    stroke.set_style(vg::PaintStyle::Stroke);
+    stroke.set_stroke_width(1.0 * scale);
+    stroke.set_anti_alias(true);
+    canvas.draw_rect(rect, &stroke);
+}
+
 /// Hit-test clips at a pixel position. Returns the first clip containing x.
-///
-/// Extracted from `TrackLane::clip_at_position` for testability.
+#[cfg(test)]
 fn hit_test_clip(
     clips: &[ClipState],
     zoom_x: f64,

@@ -22,7 +22,7 @@ use crate::engine_bridge::commands::EngineCommand;
 use crate::engine_bridge::mock_engine::{spawn_mock_engine, MockEngineHandle};
 use crate::engine_bridge::real_bridge::RealEngineBridge;
 use crate::engine_bridge::responses::EngineResponse;
-use crate::state::arrangement_state::ArrangementState;
+use crate::state::arrangement_state::{ArrangementState, ClipSelection};
 use crate::state::browser_state::{BrowserFilter, BrowserState};
 use crate::state::mixer_state::MixerState;
 use crate::state::piano_roll_state::PianoRollState;
@@ -30,6 +30,8 @@ use crate::state::transport_state::TransportState;
 use crate::types::midi::{Note, NoteId};
 use crate::types::time::{QuantizeGrid, Tick, PPQN};
 use crate::types::track::{ClipId, ClipState, TrackId, TrackKind, TrackState};
+use crate::views::arrangement::clip_interaction::ClipInteraction;
+use crate::views::arrangement::snap::SnapGrid;
 
 /// Which main view is currently active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Data)]
@@ -180,6 +182,25 @@ pub enum AppEvent {
     BrowserActivate(usize),
     BrowserSetFilter(BrowserFilter),
     ToggleBrowser,
+
+    // -- Arrangement clip operations --
+    SelectClips(ClipSelection),
+    UpdateClipInteraction(ClipInteraction),
+    MoveClips {
+        delta_tick: Tick,
+        delta_track_index: i32,
+    },
+    ResizeClip {
+        clip_id: ClipId,
+        new_start: Tick,
+        new_duration: Tick,
+    },
+    SplitClipAtPlayhead,
+    DuplicateSelectedClips,
+    DeleteSelectedClips,
+    CopySelectedClips,
+    PasteClips,
+    SetSnapGrid(SnapGrid),
 }
 
 /// Create a deterministic UUID for demo data (stable across restarts).
@@ -1340,6 +1361,46 @@ impl Model for AppData {
                     self.active_view = ActiveView::Arrangement;
                 }
             }
+
+            // Arrangement clip operations
+            AppEvent::SelectClips(_)
+            | AppEvent::UpdateClipInteraction(_)
+            | AppEvent::MoveClips { .. }
+            | AppEvent::ResizeClip { .. }
+            | AppEvent::SplitClipAtPlayhead
+            | AppEvent::DuplicateSelectedClips
+            | AppEvent::DeleteSelectedClips
+            | AppEvent::CopySelectedClips
+            | AppEvent::PasteClips
+            | AppEvent::SetSnapGrid(_) => {
+                self.dispatch_clip_operations(app_event);
+            }
         });
+    }
+}
+
+impl AppData {
+    /// Dispatch arrangement clip operation events.
+    fn dispatch_clip_operations(&mut self, event: &AppEvent) {
+        match event {
+            AppEvent::SelectClips(selection) => {
+                self.arrangement.selected_clips = selection.clone();
+            }
+            AppEvent::UpdateClipInteraction(interaction) => {
+                self.arrangement.interaction = interaction.clone();
+            }
+            AppEvent::SetSnapGrid(grid) => {
+                self.arrangement.snap_grid = *grid;
+            }
+            // Stub handlers for features implemented in later commits
+            AppEvent::MoveClips { .. }
+            | AppEvent::ResizeClip { .. }
+            | AppEvent::SplitClipAtPlayhead
+            | AppEvent::DuplicateSelectedClips
+            | AppEvent::DeleteSelectedClips
+            | AppEvent::CopySelectedClips
+            | AppEvent::PasteClips => {}
+            _ => {}
+        }
     }
 }
