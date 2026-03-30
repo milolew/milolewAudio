@@ -1299,15 +1299,25 @@ impl AppData {
             None => return,
         };
         let selected: Vec<NoteId> = self.piano_roll.selected_notes.drain(..).collect();
-        for note_id in selected {
-            if let Some(clip) = self.clips.iter().find(|c| c.id == clip_id) {
-                if let Some(note) = clip.notes.iter().find(|n| n.id == note_id).copied() {
-                    let action = undo_actions::RemoveNoteAction { clip_id, note };
-                    action.apply(self);
-                    self.undo_manager.push(Box::new(action));
-                }
-            }
+        if selected.is_empty() {
+            return;
         }
+        let clip = match self.clips.iter().find(|c| c.id == clip_id) {
+            Some(c) => c,
+            None => return,
+        };
+        let notes: Vec<Note> = clip
+            .notes
+            .iter()
+            .filter(|n| selected.contains(&n.id))
+            .copied()
+            .collect();
+        if notes.is_empty() {
+            return;
+        }
+        let action = undo_actions::RemoveNotesAction { clip_id, notes };
+        action.apply(self);
+        self.undo_manager.push(Box::new(action));
     }
 
     fn handle_add_track(&mut self, kind: TrackKind) {

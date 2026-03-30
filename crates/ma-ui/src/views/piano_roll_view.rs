@@ -26,6 +26,9 @@ const MIN_NOTE_DURATION: Tick = 1;
 /// Height of the velocity lane in logical pixels.
 const VELOCITY_LANE_HEIGHT: f32 = 60.0;
 
+/// Minimum rendered/hit-testable width of a velocity bar (in pixels).
+const VELOCITY_BAR_MIN_WIDTH: f32 = 4.0;
+
 // ---------------------------------------------------------------------------
 // PianoRollView -- outer layout
 // ---------------------------------------------------------------------------
@@ -866,7 +869,7 @@ impl VelocityLane {
         let clip_id = pr.active_clip_id?;
         let clip = app.clips.iter().find(|c| c.id == clip_id)?;
 
-        let bar_min_width: f32 = 4.0;
+        let bar_min_width = VELOCITY_BAR_MIN_WIDTH;
 
         for note in clip.notes.iter().rev() {
             let nx = pr.tick_to_x(note.start_tick) + bounds.x;
@@ -926,7 +929,7 @@ impl View for VelocityLane {
             None => return,
         };
 
-        let bar_min_width: f32 = 4.0;
+        let bar_min_width = VELOCITY_BAR_MIN_WIDTH;
 
         let mut bar_paint = vg::Paint::default();
         bar_paint.set_style(vg::PaintStyle::Fill);

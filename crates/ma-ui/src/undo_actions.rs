@@ -209,6 +209,50 @@ impl UndoAction<AppData> for RemoveNoteAction {
 }
 
 // ---------------------------------------------------------------------------
+// 7b. RemoveNotesAction (batch delete)
+// ---------------------------------------------------------------------------
+
+pub struct RemoveNotesAction {
+    pub clip_id: ClipId,
+    pub notes: Vec<Note>,
+}
+
+impl UndoAction<AppData> for RemoveNotesAction {
+    fn description(&self) -> &str {
+        "Delete Selected Notes"
+    }
+
+    fn apply(&self, state: &mut AppData) {
+        if let Some(clip) = state.clips.iter().find(|c| c.id == self.clip_id) {
+            let mut updated = clip.clone();
+            for note in &self.notes {
+                updated.notes.retain(|n| n.id != note.id);
+                state.send_command(EngineCommand::RemoveNote {
+                    clip_id: self.clip_id,
+                    note_id: note.id,
+                });
+            }
+            state.update_clip(updated);
+        }
+    }
+
+    fn revert(&self, state: &mut AppData) {
+        if let Some(clip) = state.clips.iter().find(|c| c.id == self.clip_id) {
+            let mut updated = clip.clone();
+            for note in &self.notes {
+                updated.notes.push(*note);
+                state.send_command(EngineCommand::AddNote {
+                    clip_id: self.clip_id,
+                    note: *note,
+                });
+            }
+            updated.notes.sort_by_key(|n| n.start_tick);
+            state.update_clip(updated);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 8. MoveNoteAction
 // ---------------------------------------------------------------------------
 

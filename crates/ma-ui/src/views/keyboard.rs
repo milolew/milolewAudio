@@ -8,7 +8,6 @@ use vizia::prelude::*;
 
 use crate::app_data::{ActiveView, AppData, AppEvent};
 use crate::state::piano_roll_state::PianoRollTool;
-use crate::types::time::Tick;
 
 /// Process a vizia event for keyboard shortcuts.
 /// Must be called from the root view's `event()` method.
@@ -138,7 +137,7 @@ fn handle_global_keys(
             true
         }
         Code::Home => {
-            cx.emit(AppEvent::SetPosition(0 as Tick));
+            cx.emit(AppEvent::SetPosition(0));
             true
         }
         Code::KeyL if !ctrl => {
