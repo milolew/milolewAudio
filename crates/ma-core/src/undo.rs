@@ -32,7 +32,11 @@ pub struct UndoManager<S> {
 
 impl<S: 'static> UndoManager<S> {
     /// Create a new UndoManager with the given maximum history depth.
+    ///
+    /// # Panics
+    /// Panics if `max_depth` is 0.
     pub fn new(max_depth: usize) -> Self {
+        assert!(max_depth > 0, "max_depth must be at least 1");
         Self {
             stack: Vec::new(),
             cursor: 0,
@@ -336,6 +340,12 @@ mod tests {
         mgr.undo(&mut state);
         assert_eq!(mgr.undo_description(), None);
         assert_eq!(mgr.redo_description(), Some("Increment"));
+    }
+
+    #[test]
+    #[should_panic(expected = "max_depth must be at least 1")]
+    fn zero_max_depth_panics() {
+        let _mgr: UndoManager<Counter> = UndoManager::new(0);
     }
 
     #[test]

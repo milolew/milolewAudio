@@ -35,6 +35,9 @@ use crate::types::midi::{Note, NoteId};
 use crate::types::time::{QuantizeGrid, Tick, PPQN};
 use crate::types::track::{ClipId, ClipState, TrackId, TrackKind, TrackState};
 
+/// Maximum number of undo actions to keep in history.
+const UNDO_MAX_DEPTH: usize = 100;
+
 /// Which main view is currently active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Data)]
 pub enum ActiveView {
@@ -405,7 +408,7 @@ impl AppData {
             response_buf: Vec::with_capacity(64),
             audio_peaks: HashMap::new(),
             audio_data: HashMap::new(),
-            undo_manager: UndoManager::new(100),
+            undo_manager: UndoManager::new(UNDO_MAX_DEPTH),
         }
     }
 
@@ -774,6 +777,7 @@ impl AppData {
         self.clips.clear();
         self.audio_peaks.clear();
         self.audio_data.clear();
+        self.undo_manager.clear();
         self.transport.tempo = project.tempo;
 
         let mut next_note_id = 1000u64;
@@ -1248,14 +1252,14 @@ impl Model for AppData {
 
             // Mixer: track parameters
             AppEvent::SetTrackVolume { track_id, volume } => {
-                let old_volume = self
-                    .tracks
-                    .iter()
-                    .find(|t| t.id == *track_id)
-                    .map(|t| t.volume);
-                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
-                    track.volume = *volume;
-                }
+                let old_volume =
+                    if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
+                        let old = track.volume;
+                        track.volume = *volume;
+                        Some(old)
+                    } else {
+                        None
+                    };
                 self.send_command(EngineCommand::SetTrackVolume {
                     track_id: *track_id,
                     volume: *volume,
@@ -1398,12 +1402,14 @@ impl Model for AppData {
             }
             // -- Undo/Redo --
             AppEvent::Undo => {
-                let mut um = std::mem::replace(&mut self.undo_manager, UndoManager::new(100));
+                let mut um =
+                    std::mem::replace(&mut self.undo_manager, UndoManager::new(UNDO_MAX_DEPTH));
                 um.undo(self);
                 self.undo_manager = um;
             }
             AppEvent::Redo => {
-                let mut um = std::mem::replace(&mut self.undo_manager, UndoManager::new(100));
+                let mut um =
+                    std::mem::replace(&mut self.undo_manager, UndoManager::new(UNDO_MAX_DEPTH));
                 um.redo(self);
                 self.undo_manager = um;
             }

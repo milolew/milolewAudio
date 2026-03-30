@@ -316,11 +316,11 @@ impl SetTrackVolumeAction {
     fn apply_volume(&self, state: &mut AppData, volume: f32) {
         if let Some(track) = state.tracks.iter_mut().find(|t| t.id == self.track_id) {
             track.volume = volume;
+            state.send_command(EngineCommand::SetTrackVolume {
+                track_id: self.track_id,
+                volume,
+            });
         }
-        state.send_command(EngineCommand::SetTrackVolume {
-            track_id: self.track_id,
-            volume,
-        });
     }
 }
 
@@ -423,22 +423,8 @@ impl UndoAction<AppData> for RenameTrackAction {
 
 pub struct TransposeNotesAction {
     pub clip_id: ClipId,
-    pub note_ids: Vec<NoteId>,
+    pub original_pitches: Vec<(NoteId, u8)>,
     pub semitones: i8,
-}
-
-impl TransposeNotesAction {
-    fn transpose(&self, state: &mut AppData, semitones: i8) {
-        if let Some(clip) = state.clips.iter().find(|c| c.id == self.clip_id) {
-            let mut updated_clip = clip.clone();
-            for note in &mut updated_clip.notes {
-                if self.note_ids.contains(&note.id) {
-                    note.pitch = (note.pitch as i16 + semitones as i16).clamp(0, 127) as u8;
-                }
-            }
-            state.update_clip(updated_clip);
-        }
-    }
 }
 
 impl UndoAction<AppData> for TransposeNotesAction {
@@ -447,11 +433,41 @@ impl UndoAction<AppData> for TransposeNotesAction {
     }
 
     fn apply(&self, state: &mut AppData) {
-        self.transpose(state, self.semitones);
+        if let Some(clip) = state.clips.iter().find(|c| c.id == self.clip_id) {
+            let mut updated_clip = clip.clone();
+            for note in &mut updated_clip.notes {
+                if self.original_pitches.iter().any(|(id, _)| *id == note.id) {
+                    note.pitch = (note.pitch as i16 + self.semitones as i16).clamp(0, 127) as u8;
+                    state.send_command(EngineCommand::MoveNote {
+                        clip_id: self.clip_id,
+                        note_id: note.id,
+                        new_start: note.start_tick,
+                        new_pitch: note.pitch,
+                    });
+                }
+            }
+            state.update_clip(updated_clip);
+        }
     }
 
     fn revert(&self, state: &mut AppData) {
-        self.transpose(state, -self.semitones);
+        if let Some(clip) = state.clips.iter().find(|c| c.id == self.clip_id) {
+            let mut updated_clip = clip.clone();
+            for note in &mut updated_clip.notes {
+                if let Some((_, original_pitch)) =
+                    self.original_pitches.iter().find(|(id, _)| *id == note.id)
+                {
+                    note.pitch = *original_pitch;
+                    state.send_command(EngineCommand::MoveNote {
+                        clip_id: self.clip_id,
+                        note_id: note.id,
+                        new_start: note.start_tick,
+                        new_pitch: note.pitch,
+                    });
+                }
+            }
+            state.update_clip(updated_clip);
+        }
     }
 }
 
@@ -476,6 +492,12 @@ impl UndoAction<AppData> for QuantizeNotesAction {
             for note in &mut updated_clip.notes {
                 if self.original_starts.iter().any(|(id, _)| *id == note.id) {
                     note.start_tick = self.quantize_grid.snap(note.start_tick);
+                    state.send_command(EngineCommand::MoveNote {
+                        clip_id: self.clip_id,
+                        note_id: note.id,
+                        new_start: note.start_tick,
+                        new_pitch: note.pitch,
+                    });
                 }
             }
             updated_clip.notes.sort_by_key(|n| n.start_tick);
@@ -491,6 +513,12 @@ impl UndoAction<AppData> for QuantizeNotesAction {
                     self.original_starts.iter().find(|(id, _)| *id == note.id)
                 {
                     note.start_tick = *original_start;
+                    state.send_command(EngineCommand::MoveNote {
+                        clip_id: self.clip_id,
+                        note_id: note.id,
+                        new_start: note.start_tick,
+                        new_pitch: note.pitch,
+                    });
                 }
             }
             updated_clip.notes.sort_by_key(|n| n.start_tick);
@@ -887,29 +915,22 @@ mod tests {
     fn transpose_notes_apply_and_revert() {
         let mut state = AppData::new();
         let cid = clip_id(1);
-        let note_ids: Vec<NoteId> = state
+        let original_pitches: Vec<(NoteId, u8)> = state
             .clip(cid)
             .unwrap()
             .notes
             .iter()
-            .map(|n| n.id)
-            .collect();
-        let original_pitches: Vec<u8> = state
-            .clip(cid)
-            .unwrap()
-            .notes
-            .iter()
-            .map(|n| n.pitch)
+            .map(|n| (n.id, n.pitch))
             .collect();
 
         let action = TransposeNotesAction {
             clip_id: cid,
-            note_ids: note_ids.clone(),
+            original_pitches: original_pitches.clone(),
             semitones: 5,
         };
 
         action.apply(&mut state);
-        for (i, nid) in note_ids.iter().enumerate() {
+        for (nid, orig_pitch) in &original_pitches {
             let note = state
                 .clip(cid)
                 .unwrap()
@@ -917,11 +938,11 @@ mod tests {
                 .iter()
                 .find(|n| n.id == *nid)
                 .unwrap();
-            assert_eq!(note.pitch, original_pitches[i] + 5);
+            assert_eq!(note.pitch, orig_pitch + 5);
         }
 
         action.revert(&mut state);
-        for (i, nid) in note_ids.iter().enumerate() {
+        for (nid, orig_pitch) in &original_pitches {
             let note = state
                 .clip(cid)
                 .unwrap()
@@ -929,8 +950,50 @@ mod tests {
                 .iter()
                 .find(|n| n.id == *nid)
                 .unwrap();
-            assert_eq!(note.pitch, original_pitches[i]);
+            assert_eq!(note.pitch, *orig_pitch);
         }
+    }
+
+    #[test]
+    fn transpose_notes_clamp_boundary_is_invertible() {
+        let mut state = AppData::new();
+        let cid = clip_id(1);
+
+        // Set a note to pitch 125 — close to 127 boundary
+        let clip = state.clip(cid).unwrap().clone();
+        let note_id = clip.notes[0].id;
+        let mut modified = clip.clone();
+        modified.notes[0].pitch = 125;
+        state.update_clip(modified);
+
+        let original_pitches = vec![(note_id, 125u8)];
+
+        let action = TransposeNotesAction {
+            clip_id: cid,
+            original_pitches,
+            semitones: 5,
+        };
+
+        action.apply(&mut state);
+        let note = state
+            .clip(cid)
+            .unwrap()
+            .notes
+            .iter()
+            .find(|n| n.id == note_id)
+            .unwrap();
+        assert_eq!(note.pitch, 127); // clamped
+
+        // Revert must restore exact original, not 127-5=122
+        action.revert(&mut state);
+        let note = state
+            .clip(cid)
+            .unwrap()
+            .notes
+            .iter()
+            .find(|n| n.id == note_id)
+            .unwrap();
+        assert_eq!(note.pitch, 125); // exact restore
     }
 
     // -- QuantizeNotesAction --
@@ -1088,7 +1151,7 @@ mod tests {
             }),
             Box::new(TransposeNotesAction {
                 clip_id: clip_id(1),
-                note_ids: vec![NoteId(100)],
+                original_pitches: vec![(NoteId(100), 60)],
                 semitones: 3,
             }),
             Box::new(QuantizeNotesAction {
