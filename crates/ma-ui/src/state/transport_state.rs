@@ -1,6 +1,7 @@
 //! Transport state — playhead position, tempo, play/record status.
 
 use crate::types::time::{Tick, TimeSignature};
+use crate::types::track::TrackId;
 
 #[derive(Debug, Clone)]
 pub struct TransportState {
@@ -14,6 +15,10 @@ pub struct TransportState {
     pub loop_end: Tick,
     pub metronome_enabled: bool,
     pub follow_playhead: bool,
+    /// Tick position when recording started (for clip placement).
+    pub record_start_position: Option<Tick>,
+    /// Tracks currently being recorded.
+    pub recording_tracks: Vec<TrackId>,
 }
 
 impl Default for TransportState {
@@ -29,6 +34,8 @@ impl Default for TransportState {
             loop_end: 7680, // 2 bars at 4/4
             metronome_enabled: false,
             follow_playhead: true,
+            record_start_position: None,
+            recording_tracks: Vec::new(),
         }
     }
 }

@@ -11,6 +11,7 @@ pub enum EngineCommand {
     Play,
     Stop,
     Record,
+    StopRecord,
     Pause,
     SetPosition(Tick),
     SetTempo(f64),
@@ -32,6 +33,10 @@ pub enum EngineCommand {
     SetTrackSolo {
         track_id: TrackId,
         solo: bool,
+    },
+    ArmTrack {
+        track_id: TrackId,
+        armed: bool,
     },
 
     // MIDI preview (live playing from UI)

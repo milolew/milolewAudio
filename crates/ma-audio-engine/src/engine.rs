@@ -4,6 +4,7 @@
 //! creates the audio graph, and provides handles for the UI to communicate with
 //! the real-time audio thread.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64};
 use std::sync::Arc;
 
@@ -88,6 +89,10 @@ pub struct EngineHandle {
     /// Track handles for reading atomic parameters from the UI.
     pub tracks: Vec<TrackHandle>,
 
+    /// Recording ring buffer consumers — moved to disk I/O thread when recording starts.
+    /// Keyed by TrackId, consumed (removed) when `DiskCommand::StartRecording` is sent.
+    pub record_consumers: HashMap<TrackId, rtrb::Consumer<f32>>,
+
     /// Engine configuration snapshot.
     pub config: EngineConfig,
 }
@@ -161,6 +166,7 @@ pub fn build_engine(
     let mut edges: Vec<Edge> = Vec::new();
     let mut tracks: Vec<Track> = Vec::new();
     let mut track_handles: Vec<TrackHandle> = Vec::new();
+    let mut record_consumers: HashMap<TrackId, rtrb::Consumer<f32>> = HashMap::new();
 
     // Add input node first (source)
     let _input_node_index = 0;
@@ -218,10 +224,12 @@ pub fn build_engine(
         all_nodes.push(result.player_node);
         all_nodes.push(Box::new(result.track_node));
 
-        tracks.push(result.track);
+        // Preserve record consumer for disk I/O thread (sent when recording starts)
+        if let Some(consumer) = result.record_consumer {
+            record_consumers.insert(*track_id, consumer);
+        }
 
-        // If there's a record consumer, it will be sent to disk thread when recording starts
-        // For now, we don't start recording at engine init
+        tracks.push(result.track);
     }
 
     // Add mixer and output nodes
@@ -277,6 +285,7 @@ pub fn build_engine(
         topology_command_sender: topology_cmd_tx,
         topology_command_receiver: topology_cmd_rx,
         tracks: track_handles,
+        record_consumers,
         config,
     };
 

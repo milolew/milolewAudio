@@ -223,6 +223,9 @@ pub enum AppEvent {
     BrowserSetFilter(BrowserFilter),
     ToggleBrowser,
 
+    // -- Recording --
+    ToggleRecordArm(TrackId),
+
     // -- Arrangement clip operations --
     SelectClips(ClipSelection),
     UpdateClipInteraction(ClipInteraction),
@@ -552,6 +555,11 @@ impl AppData {
                 track_id: *track_id,
                 solo: *solo,
             }),
+            EngineCommand::ArmTrack { track_id, armed } => Some(CoreCommand::ArmTrack {
+                track_id: *track_id,
+                armed: *armed,
+            }),
+            EngineCommand::StopRecord => Some(CoreCommand::StopRecording),
             _ => None,
         }
     }
@@ -723,10 +731,94 @@ impl AppData {
                 EngineResponse::CpuLoad(load) => {
                     self.mixer.cpu_load = *load;
                 }
+                EngineResponse::RecordingComplete {
+                    track_id,
+                    path,
+                    total_samples,
+                } => {
+                    self.handle_recording_complete(*track_id, path.clone(), *total_samples);
+                }
+                EngineResponse::RecordingError { track_id, error } => {
+                    log::error!("Recording error on track {track_id:?}: {error}");
+                }
             }
         }
         // Return the buffer for reuse next frame
         self.response_buf = responses;
+    }
+
+    fn handle_recording_complete(
+        &mut self,
+        track_id: TrackId,
+        path: std::path::PathBuf,
+        _total_samples: u64,
+    ) {
+        let record_start = self.transport.record_start_position.unwrap_or(0);
+
+        // Decode the recorded WAV file
+        let decoded = match crate::file_loader::load_audio_file(&path) {
+            Ok(d) => d,
+            Err(e) => {
+                log::error!("Failed to decode recording {}: {e}", path.display());
+                return;
+            }
+        };
+
+        let clip_id = ClipId::new();
+        let data: Arc<[f32]> = Arc::from(decoded.samples.into_boxed_slice());
+
+        // Build peak cache for waveform rendering
+        let peak_cache = ma_audio_engine::peak_cache::build_peak_cache(
+            &data,
+            decoded.channels,
+            decoded.length_samples,
+        );
+
+        // Compute duration in ticks from sample length
+        let sample_rate = decoded.sample_rate as f64;
+        let length_seconds = decoded.length_samples as f64 / sample_rate;
+        let length_ticks = (length_seconds * self.transport.tempo / 60.0 * PPQN as f64) as i64;
+
+        let clip_name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Recording".into());
+
+        let clip_state = ClipState {
+            id: clip_id,
+            track_id,
+            start_tick: record_start,
+            duration_ticks: length_ticks.max(1),
+            name: clip_name.clone(),
+            notes: Vec::new(),
+            audio_file: Some(path.to_string_lossy().to_string()),
+            audio_length_samples: Some(decoded.length_samples),
+            audio_sample_rate: Some(decoded.sample_rate),
+        };
+
+        self.clips.push(clip_state);
+        self.audio_peaks.insert(clip_id, Arc::new(peak_cache));
+        self.audio_data.insert(clip_id, Arc::clone(&data));
+
+        // Install in engine for playback
+        if let EngineMode::Real { bridge, .. } = &self.engine {
+            bridge.send_topology_command(ma_core::TopologyCommand::LoadClip {
+                track_id,
+                clip_id,
+                data,
+                channels: decoded.channels,
+                start_sample: 0,
+                length_samples: decoded.length_samples as i64,
+            });
+        }
+
+        // Clear recording metadata for this track
+        self.transport.recording_tracks.retain(|id| *id != track_id);
+        if self.transport.recording_tracks.is_empty() {
+            self.transport.record_start_position = None;
+        }
+
+        log::info!("Recording complete: clip '{clip_name}' on track {track_id:?}");
     }
 
     // -- Project save/load/export --
@@ -850,6 +942,7 @@ impl AppData {
                 mute: track_file.muted,
                 solo: false,
                 color: track_file.color,
+                record_armed: false,
             });
 
             for clip_file in &track_file.clips {
@@ -1069,10 +1162,11 @@ impl AppData {
                 self.send_command(EngineCommand::Play);
             }
             AppEvent::Stop => {
+                self.stop_recording_if_active();
                 self.send_command(EngineCommand::Stop);
             }
             AppEvent::Record => {
-                self.send_command(EngineCommand::Record);
+                self.start_recording();
             }
             AppEvent::Pause => {
                 self.send_command(EngineCommand::Pause);
@@ -1101,6 +1195,64 @@ impl AppData {
             }
             _ => {}
         }
+    }
+
+    fn start_recording(&mut self) {
+        let armed_tracks: Vec<_> = self
+            .tracks
+            .iter()
+            .filter(|t| t.record_armed)
+            .map(|t| (t.id, t.name.clone()))
+            .collect();
+
+        if armed_tracks.is_empty() {
+            log::warn!("Record pressed but no tracks are armed");
+            return;
+        }
+
+        self.transport.record_start_position = Some(self.transport.position);
+        self.transport.recording_tracks = armed_tracks.iter().map(|(id, _)| *id).collect();
+
+        // Send StartRecording to engine (sets is_recording on armed track nodes)
+        self.send_command(EngineCommand::Record);
+
+        // Start disk recording for each armed track
+        if let EngineMode::Real { bridge, .. } = &mut self.engine {
+            let sample_rate = bridge.sample_rate();
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            let recording_dir = std::path::PathBuf::from("recordings");
+            if let Err(e) = std::fs::create_dir_all(&recording_dir) {
+                log::error!("Failed to create recordings directory: {e}");
+                return;
+            }
+
+            for (track_id, track_name) in &armed_tracks {
+                let safe_name = track_name.replace(' ', "_");
+                let path = recording_dir.join(format!("{safe_name}_{timestamp}.wav"));
+                bridge.start_recording_for_track(*track_id, path, 2, sample_rate);
+            }
+        }
+    }
+
+    fn stop_recording_if_active(&mut self) {
+        if !self.transport.is_recording {
+            return;
+        }
+
+        let recording_tracks = std::mem::take(&mut self.transport.recording_tracks);
+
+        if let EngineMode::Real { bridge, .. } = &self.engine {
+            for track_id in &recording_tracks {
+                bridge.stop_recording_for_track(*track_id);
+            }
+        }
+
+        // StopRecording command is sent BEFORE Stop in engine
+        self.send_command(EngineCommand::StopRecord);
     }
 
     fn dispatch_piano_roll(&mut self, event: &AppEvent) {
@@ -1502,6 +1654,23 @@ impl Model for AppData {
                     self.send_command(EngineCommand::SetTrackSolo {
                         track_id: *track_id,
                         solo,
+                    });
+                }
+            }
+
+            // Recording: arm toggle
+            AppEvent::ToggleRecordArm(track_id) => {
+                let new_armed =
+                    if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
+                        track.record_armed = !track.record_armed;
+                        Some(track.record_armed)
+                    } else {
+                        None
+                    };
+                if let Some(armed) = new_armed {
+                    self.send_command(EngineCommand::ArmTrack {
+                        track_id: *track_id,
+                        armed,
                     });
                 }
             }

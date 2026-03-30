@@ -215,6 +215,23 @@ impl View for TrackHeader {
         let name_y = bounds.y + bounds.h * 0.65;
         canvas.draw_str(&track.name, (text_x, name_y), &name_font, &name_paint);
 
+        // -- Record arm indicator (red circle, top-right) --
+        let arm_radius = 6.0 * scale;
+        let arm_cx = bounds.x + bounds.w - 16.0 * scale;
+        let arm_cy = bounds.y + 14.0 * scale;
+        let mut arm_paint = vg::Paint::default();
+        arm_paint.set_anti_alias(true);
+
+        if track.record_armed {
+            arm_paint.set_color(vg::Color::from_argb(255, 220, 50, 50));
+            arm_paint.set_style(vg::PaintStyle::Fill);
+        } else {
+            arm_paint.set_color(vg::Color::from_argb(120, 180, 60, 60));
+            arm_paint.set_style(vg::PaintStyle::Stroke);
+            arm_paint.set_stroke_width(1.5 * scale);
+        }
+        canvas.draw_circle((arm_cx, arm_cy), arm_radius, &arm_paint);
+
         // -- Bottom separator line --
         let mut sep_paint = vg::Paint::default();
         sep_paint.set_color(vg::Color::from_argb(255, 50, 50, 50));
@@ -240,9 +257,26 @@ impl View for TrackHeader {
             if let WindowEvent::MouseDown(MouseButton::Left) = window_event {
                 if let Some(app) = cx.data::<AppData>() {
                     if let Some(track) = app.tracks.get(self.track_index) {
-                        cx.emit(AppEvent::SelectTrack(track.id));
+                        let bounds = cx.bounds();
+                        let scale = cx.scale_factor();
+                        let cursor_x = cx.mouse().cursor_x;
+                        let cursor_y = cx.mouse().cursor_y;
+
+                        // Check if click is in arm button area (top-right circle)
+                        let arm_cx = bounds.x + bounds.w - 16.0 * scale;
+                        let arm_cy = bounds.y + 14.0 * scale;
+                        let dx = cursor_x - arm_cx;
+                        let dy = cursor_y - arm_cy;
+                        let hit_arm = (dx * dx + dy * dy) < (12.0 * scale * 12.0 * scale);
+
+                        if hit_arm {
+                            cx.emit(AppEvent::ToggleRecordArm(track.id));
+                        } else {
+                            cx.emit(AppEvent::SelectTrack(track.id));
+                        }
                     }
                 }
+                cx.needs_redraw();
                 meta.consume();
             }
         });

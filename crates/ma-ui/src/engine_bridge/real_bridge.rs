@@ -3,16 +3,18 @@
 //! Translates between ma-core::EngineEvent and the UI's EngineResponse type,
 //! and forwards UI commands as ma-core::EngineCommand.
 
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
+use ma_audio_engine::disk_io::{DiskCommand, DiskEvent};
 use ma_audio_engine::engine::EngineHandle;
 use ma_core::commands::{EngineCommand as CoreCommand, TopologyCommand};
 use ma_core::events::EngineEvent;
+use ma_core::ids::TrackId;
 use ma_core::parameters::TransportState;
 use ma_core::time::PPQN;
 
 use crate::engine_bridge::responses::EngineResponse;
-use crate::types::track::TrackId;
 
 /// Wraps the real audio engine handle for UI communication.
 pub struct RealEngineBridge {
@@ -98,6 +100,26 @@ impl RealEngineBridge {
             }
         }
 
+        // Poll disk I/O events (recording completion/error)
+        while let Ok(disk_event) = self.handle.disk_event_receiver.try_recv() {
+            match disk_event {
+                DiskEvent::RecordingComplete {
+                    track_id,
+                    path,
+                    total_samples,
+                } => {
+                    out.push(EngineResponse::RecordingComplete {
+                        track_id,
+                        path,
+                        total_samples,
+                    });
+                }
+                DiskEvent::RecordingError { track_id, error } => {
+                    out.push(EngineResponse::RecordingError { track_id, error });
+                }
+            }
+        }
+
         // Always send a transport update with current atomic playhead
         let playhead_samples = self.handle.playhead_position.load(Ordering::Relaxed);
         let is_recording = self.handle.is_recording.load(Ordering::Relaxed);
@@ -147,5 +169,44 @@ impl RealEngineBridge {
     /// Get the current tempo.
     pub fn tempo(&self) -> f64 {
         self.tempo
+    }
+
+    /// Start recording for a track — sends the record consumer to the disk I/O thread.
+    /// Returns false if the consumer was already consumed or the channel is closed.
+    pub fn start_recording_for_track(
+        &mut self,
+        track_id: TrackId,
+        output_path: PathBuf,
+        channels: u16,
+        sample_rate: u32,
+    ) -> bool {
+        if let Some(consumer) = self.handle.record_consumers.remove(&track_id) {
+            self.handle
+                .disk_command_sender
+                .send(DiskCommand::StartRecording {
+                    track_id,
+                    consumer,
+                    output_path,
+                    channels,
+                    sample_rate,
+                })
+                .is_ok()
+        } else {
+            log::warn!("No record consumer available for track {track_id:?}");
+            false
+        }
+    }
+
+    /// Stop recording for a track — tells disk I/O to finalize the WAV file.
+    pub fn stop_recording_for_track(&self, track_id: TrackId) -> bool {
+        self.handle
+            .disk_command_sender
+            .send(DiskCommand::StopRecording { track_id })
+            .is_ok()
+    }
+
+    /// Update cached tempo (for accurate sample→tick conversion).
+    pub fn set_tempo(&mut self, bpm: f64) {
+        self.tempo = bpm;
     }
 }
