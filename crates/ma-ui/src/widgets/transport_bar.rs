@@ -77,6 +77,12 @@ impl TransportBar {
                     .class("transport-btn")
                     .toggle_class("active", AppData::transport.map(|t| t.loop_enabled));
 
+                // Metronome toggle
+                Button::new(cx, |cx| Label::new(cx, "Click"))
+                    .on_press(|cx| cx.emit(AppEvent::ToggleMetronome))
+                    .class("transport-btn")
+                    .toggle_class("active", AppData::transport.map(|t| t.metronome_enabled));
+
                 Element::new(cx).class("separator");
 
                 // CPU meter — Binding avoids format! on every mixer poll

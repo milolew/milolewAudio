@@ -148,4 +148,11 @@ impl RealEngineBridge {
     pub fn tempo(&self) -> f64 {
         self.tempo
     }
+
+    /// Set metronome enabled state directly via the shared atomic.
+    pub fn set_metronome_enabled(&self, enabled: bool) {
+        self.handle
+            .metronome_enabled
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
 }

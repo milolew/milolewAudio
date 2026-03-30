@@ -62,6 +62,9 @@ pub struct CallbackState {
     /// Index of the OutputNode in the graph (for reading final output).
     pub output_node_index: Option<usize>,
 
+    /// Index of the MetronomeNode in the graph.
+    pub metronome_node_index: Option<usize>,
+
     /// Sample rate.
     pub sample_rate: f32,
 

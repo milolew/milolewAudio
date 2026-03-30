@@ -12,6 +12,7 @@ pub struct TransportState {
     pub loop_enabled: bool,
     pub loop_start: Tick,
     pub loop_end: Tick,
+    pub metronome_enabled: bool,
 }
 
 impl Default for TransportState {
@@ -25,6 +26,7 @@ impl Default for TransportState {
             loop_enabled: false,
             loop_start: 0,
             loop_end: 7680, // 2 bars at 4/4
+            metronome_enabled: false,
         }
     }
 }

@@ -180,6 +180,13 @@ pub fn process_commands(
                 }
             }
 
+            // ── Metronome ──
+            EngineCommand::SetMetronomeEnabled(_enabled) => {
+                // Metronome enabled/disabled is handled via atomic in MetronomeNode.
+                // The UI sets the Arc<AtomicBool> directly via EngineHandle.
+                // This command variant exists for the mock engine path.
+            }
+
             // ── Lifecycle ──
             EngineCommand::Shutdown => {
                 shutdown = true;

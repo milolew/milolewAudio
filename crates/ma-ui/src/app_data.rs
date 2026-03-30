@@ -112,6 +112,7 @@ pub enum AppEvent {
     SetTempo(f64),
     SetPosition(Tick),
     ToggleLoop,
+    ToggleMetronome,
 
     // -- View switching --
     SwitchView(ActiveView),
@@ -1256,6 +1257,13 @@ impl Model for AppData {
             | AppEvent::SetPosition(_)
             | AppEvent::ToggleLoop => {
                 self.dispatch_transport(app_event);
+            }
+            AppEvent::ToggleMetronome => {
+                self.transport.metronome_enabled = !self.transport.metronome_enabled;
+                // Set the atomic directly on the engine handle for zero-latency toggle
+                if let EngineMode::Real { bridge, .. } = &mut self.engine {
+                    bridge.set_metronome_enabled(self.transport.metronome_enabled);
+                }
             }
 
             // Preferences

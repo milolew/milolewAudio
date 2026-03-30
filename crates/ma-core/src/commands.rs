@@ -83,6 +83,10 @@ pub enum EngineCommand {
     /// Remove a MIDI clip from a track's MidiPlayerNode.
     RemoveMidiClipFromPlayer { track_id: TrackId, clip_id: ClipId },
 
+    // ── Metronome ──────────────────────────────────────────────
+    /// Enable or disable the metronome click.
+    SetMetronomeEnabled(bool),
+
     // ── Engine lifecycle ───────────────────────────────────────
     /// Gracefully shut down the audio engine.
     Shutdown,
