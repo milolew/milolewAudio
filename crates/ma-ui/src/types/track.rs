@@ -7,6 +7,7 @@ use super::time::Tick;
 
 // Re-export ID types from ma-core for unified type system.
 pub use ma_core::ids::{ClipId, TrackId};
+pub use ma_core::parameters::MonitorMode;
 
 /// Track type discriminator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +26,8 @@ pub struct TrackState {
     pub pan: f32,
     pub mute: bool,
     pub solo: bool,
+    pub record_armed: bool,
+    pub monitor_mode: MonitorMode,
     pub color: [u8; 3],
 }
 
@@ -38,6 +41,8 @@ impl TrackState {
             pan: 0.0,
             mute: false,
             solo: false,
+            record_armed: false,
+            monitor_mode: MonitorMode::Off,
             color,
         }
     }
@@ -51,6 +56,8 @@ impl TrackState {
             pan: 0.0,
             mute: false,
             solo: false,
+            record_armed: false,
+            monitor_mode: MonitorMode::Off,
             color,
         }
     }

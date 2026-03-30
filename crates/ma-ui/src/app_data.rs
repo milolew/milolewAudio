@@ -112,6 +112,7 @@ pub enum AppEvent {
     SetTempo(f64),
     SetPosition(Tick),
     ToggleLoop,
+    ToggleMetronome,
 
     // -- View switching --
     SwitchView(ActiveView),
@@ -173,6 +174,16 @@ pub enum AppEvent {
         bit_depth: ExportBitDepth,
     },
 
+    // -- Track management --
+    AddTrack(TrackKind),
+    RemoveTrack(TrackId),
+    StartRenameTrack(TrackId),
+    FinishRenameTrack,
+    CancelRenameTrack,
+    RenameTrackInput(String),
+    ToggleRecordArm(TrackId),
+    CycleMonitorMode(TrackId),
+
     // -- Browser --
     BrowserRefresh,
     BrowserGoUp,
@@ -181,6 +192,18 @@ pub enum AppEvent {
     BrowserSetFilter(BrowserFilter),
     ToggleBrowser,
 }
+
+/// Palette of track colors — cycles when creating new tracks.
+const TRACK_COLORS: [[u8; 3]; 8] = [
+    [100, 160, 255], // blue
+    [255, 140, 80],  // orange
+    [80, 220, 120],  // green
+    [200, 100, 255], // purple
+    [255, 200, 60],  // yellow
+    [255, 100, 140], // pink
+    [60, 200, 200],  // teal
+    [180, 180, 100], // olive
+];
 
 /// Create a deterministic UUID for demo data (stable across restarts).
 fn demo_id(n: u64) -> uuid::Uuid {
@@ -472,6 +495,14 @@ impl AppData {
             EngineCommand::SetTrackSolo { track_id, solo } => Some(CoreCommand::SetTrackSolo {
                 track_id: *track_id,
                 solo: *solo,
+            }),
+            EngineCommand::ArmTrack { track_id, armed } => Some(CoreCommand::ArmTrack {
+                track_id: *track_id,
+                armed: *armed,
+            }),
+            EngineCommand::SetMonitorMode { track_id, mode } => Some(CoreCommand::SetMonitorMode {
+                track_id: *track_id,
+                mode: *mode,
             }),
             _ => None,
         }
@@ -769,6 +800,8 @@ impl AppData {
                 pan: track_file.pan,
                 mute: track_file.muted,
                 solo: false,
+                record_armed: false,
+                monitor_mode: ma_core::MonitorMode::Off,
                 color: track_file.color,
             });
 
@@ -981,6 +1014,106 @@ impl AppData {
         });
     }
 
+    // -- Track management --
+
+    fn add_track(&mut self, kind: TrackKind) {
+        let track_id = TrackId::new();
+        let color = TRACK_COLORS[self.tracks.len() % TRACK_COLORS.len()];
+        let (name, track_type) = match kind {
+            TrackKind::Audio => (
+                format!(
+                    "Audio {}",
+                    self.tracks
+                        .iter()
+                        .filter(|t| t.kind == TrackKind::Audio)
+                        .count()
+                        + 1
+                ),
+                ma_core::parameters::TrackType::Audio,
+            ),
+            TrackKind::Midi => (
+                format!(
+                    "MIDI {}",
+                    self.tracks
+                        .iter()
+                        .filter(|t| t.kind == TrackKind::Midi)
+                        .count()
+                        + 1
+                ),
+                ma_core::parameters::TrackType::Midi,
+            ),
+        };
+
+        let track_state = TrackState {
+            id: track_id,
+            name: name.clone(),
+            kind,
+            volume: 0.8,
+            pan: 0.0,
+            mute: false,
+            solo: false,
+            record_armed: false,
+            monitor_mode: ma_core::MonitorMode::Off,
+            color,
+        };
+        self.tracks.push(track_state);
+
+        // Send topology command to engine
+        if let EngineMode::Real { bridge, .. } = &self.engine {
+            bridge.send_topology_command(ma_core::TopologyCommand::AddTrack {
+                track_id,
+                config: ma_core::parameters::TrackConfig {
+                    name,
+                    channel_count: 2,
+                    input_enabled: kind == TrackKind::Audio,
+                    initial_volume: 0.8,
+                    initial_pan: 0.0,
+                    track_type,
+                },
+            });
+        }
+
+        self.arrangement.selected_track = Some(track_id);
+        log::info!("Added track {track_id:?}");
+    }
+
+    fn remove_track(&mut self, track_id: TrackId) {
+        // Clear inline rename if this track was being edited
+        if self.arrangement.editing_track == Some(track_id) {
+            self.arrangement.editing_track = None;
+            self.arrangement.editing_name.clear();
+        }
+
+        // Remove associated clips
+        self.clips.retain(|c| c.track_id != track_id);
+        // Remove audio data and peak caches for removed clips
+        let clip_ids_to_remove: Vec<ClipId> = self
+            .audio_peaks
+            .keys()
+            .filter(|cid| !self.clips.iter().any(|c| c.id == **cid))
+            .copied()
+            .collect();
+        for cid in &clip_ids_to_remove {
+            self.audio_peaks.remove(cid);
+            self.audio_data.remove(cid);
+        }
+
+        // Remove the track
+        self.tracks.retain(|t| t.id != track_id);
+
+        // Clear selection if removed track was selected
+        if self.arrangement.selected_track == Some(track_id) {
+            self.arrangement.selected_track = self.tracks.first().map(|t| t.id);
+        }
+
+        // Send topology command to engine
+        if let EngineMode::Real { bridge, .. } = &self.engine {
+            bridge.send_topology_command(ma_core::TopologyCommand::RemoveTrack { track_id });
+        }
+
+        log::info!("Removed track {track_id:?}");
+    }
+
     // -- Dispatch helpers --
 
     fn dispatch_transport(&mut self, event: &AppEvent) {
@@ -1134,6 +1267,13 @@ impl Model for AppData {
             | AppEvent::ToggleLoop => {
                 self.dispatch_transport(app_event);
             }
+            AppEvent::ToggleMetronome => {
+                self.transport.metronome_enabled = !self.transport.metronome_enabled;
+                // Set the atomic directly on the engine handle for zero-latency toggle
+                if let EngineMode::Real { bridge, .. } = &mut self.engine {
+                    bridge.set_metronome_enabled(self.transport.metronome_enabled);
+                }
+            }
 
             // Preferences
             AppEvent::ShowPreferences => {
@@ -1240,6 +1380,67 @@ impl Model for AppData {
                     self.send_command(EngineCommand::SetTrackSolo {
                         track_id: *track_id,
                         solo,
+                    });
+                }
+            }
+
+            // Track management
+            AppEvent::AddTrack(kind) => {
+                self.add_track(*kind);
+            }
+            AppEvent::RemoveTrack(track_id) => {
+                self.remove_track(*track_id);
+            }
+            AppEvent::StartRenameTrack(track_id) => {
+                if let Some(track) = self.tracks.iter().find(|t| t.id == *track_id) {
+                    self.arrangement.editing_name = track.name.clone();
+                    self.arrangement.editing_track = Some(*track_id);
+                }
+            }
+            AppEvent::FinishRenameTrack => {
+                if let Some(track_id) = self.arrangement.editing_track.take() {
+                    let name = std::mem::take(&mut self.arrangement.editing_name);
+                    if !name.is_empty() {
+                        if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                            track.name = name;
+                        }
+                    }
+                }
+            }
+            AppEvent::CancelRenameTrack => {
+                self.arrangement.editing_track = None;
+                self.arrangement.editing_name.clear();
+            }
+            AppEvent::RenameTrackInput(text) => {
+                self.arrangement.editing_name = text.clone();
+            }
+            AppEvent::ToggleRecordArm(track_id) => {
+                let (new_armed, core_track_id) =
+                    if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
+                        track.record_armed = !track.record_armed;
+                        (Some(track.record_armed), *track_id)
+                    } else {
+                        (None, *track_id)
+                    };
+                if let Some(armed) = new_armed {
+                    self.send_command(EngineCommand::ArmTrack {
+                        track_id: core_track_id,
+                        armed,
+                    });
+                }
+            }
+            AppEvent::CycleMonitorMode(track_id) => {
+                use crate::types::track::MonitorMode;
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
+                    let new_mode = match track.monitor_mode {
+                        MonitorMode::Off => MonitorMode::On,
+                        MonitorMode::On => MonitorMode::Auto,
+                        MonitorMode::Auto => MonitorMode::Off,
+                    };
+                    track.monitor_mode = new_mode;
+                    self.send_command(EngineCommand::SetMonitorMode {
+                        track_id: *track_id,
+                        mode: new_mode,
                     });
                 }
             }

@@ -63,6 +63,12 @@ pub enum EngineCommand {
     /// Arm or disarm a track for recording.
     ArmTrack { track_id: TrackId, armed: bool },
 
+    /// Set input monitoring mode for a track.
+    SetMonitorMode {
+        track_id: TrackId,
+        mode: crate::parameters::MonitorMode,
+    },
+
     /// Begin recording on all armed tracks (transport must be playing).
     StartRecording,
 

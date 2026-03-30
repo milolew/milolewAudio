@@ -16,6 +16,10 @@ pub struct ArrangementState {
     pub selected_clips: Vec<ClipId>,
     /// Track lane height in pixels.
     pub track_height: f32,
+    /// Track being renamed inline (None = not editing).
+    pub editing_track: Option<TrackId>,
+    /// Buffer for the name being edited.
+    pub editing_name: String,
 }
 
 impl Default for ArrangementState {
@@ -27,6 +31,8 @@ impl Default for ArrangementState {
             selected_track: None,
             selected_clips: Vec::new(),
             track_height: 80.0,
+            editing_track: None,
+            editing_name: String::new(),
         }
     }
 }

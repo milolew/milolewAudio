@@ -5,11 +5,12 @@
 //! pushes audio to a recording ring buffer.
 
 use std::any::Any;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 
 use ma_core::audio_buffer::AudioBuffer;
 use ma_core::ids::{NodeId, TrackId};
+use ma_core::parameters::MonitorMode;
 
 use crate::graph::node::{AudioNode, ProcessContext};
 
@@ -67,6 +68,9 @@ pub struct TrackNode {
     /// Set to `true` when samples are dropped during recording due to ring buffer overflow.
     /// Checked and reset by the audio callback after processing.
     pub record_overflow: AtomicBool,
+
+    /// Input monitoring mode. Encoded as u8: 0=Off, 1=On, 2=Auto.
+    pub monitor_mode: Arc<AtomicU8>,
 }
 
 impl TrackNode {
@@ -86,12 +90,33 @@ impl TrackNode {
             is_recording: Arc::new(AtomicBool::new(false)),
             record_producer,
             record_overflow: AtomicBool::new(false),
+            monitor_mode: Arc::new(AtomicU8::new(0)), // Off
         }
     }
 
     /// Get the track ID this node belongs to.
     pub fn track_id(&self) -> TrackId {
         self.track_id
+    }
+
+    /// Load the current monitor mode from the atomic.
+    #[inline]
+    fn load_monitor_mode(&self) -> MonitorMode {
+        match self.monitor_mode.load(Ordering::Relaxed) {
+            1 => MonitorMode::On,
+            2 => MonitorMode::Auto,
+            _ => MonitorMode::Off,
+        }
+    }
+
+    /// Store a monitor mode into the atomic.
+    pub fn store_monitor_mode(atomic: &AtomicU8, mode: MonitorMode) {
+        let val = match mode {
+            MonitorMode::Off => 0,
+            MonitorMode::On => 1,
+            MonitorMode::Auto => 2,
+        };
+        atomic.store(val, Ordering::Relaxed);
     }
 
     /// Push audio samples to the recording ring buffer in INTERLEAVED order.
@@ -166,26 +191,44 @@ impl AudioNode for TrackNode {
             return;
         }
 
-        // Copy input to output
-        if let Some(input) = inputs.first() {
-            output.copy_from(input);
-        } else {
-            output.clear();
-            return;
+        let input = match inputs.first() {
+            Some(i) => i,
+            None => {
+                output.clear();
+                return;
+            }
+        };
+
+        let is_armed = self.record_armed.load(Ordering::Relaxed);
+        // ORDERING: Acquire — cross-thread state stored with Release by command processor
+        let is_recording = self.is_recording.load(Ordering::Acquire);
+        let is_input_track = self.record_producer.is_some();
+
+        // Push to recording buffer if armed and recording (pre-fader, pre-monitor)
+        if is_armed && is_recording {
+            let dropped = self.push_to_record_buffer(input);
+            if dropped > 0 {
+                self.record_overflow.store(true, Ordering::Relaxed);
+            }
         }
 
-        // Push to recording buffer if armed and recording
-        // ORDERING: Relaxed OK — record_armed is single-value eventual consistency;
-        // is_recording is written with Release but read here on audio thread (self-read OK with Relaxed)
-        if self.record_armed.load(Ordering::Relaxed) && self.is_recording.load(Ordering::Relaxed) {
-            // Record the raw input (pre-fader) for clean recording
-            if let Some(input) = inputs.first() {
-                let dropped = self.push_to_record_buffer(input);
-                if dropped > 0 {
-                    // ORDERING: Relaxed OK — single-value flag, read/reset in audio callback
-                    self.record_overflow.store(true, Ordering::Relaxed);
-                }
+        // Input monitoring logic (only applies to input-capable tracks)
+        if is_input_track {
+            let monitor = self.load_monitor_mode();
+            let should_pass_through = match monitor {
+                MonitorMode::Off => false,
+                MonitorMode::On => true,
+                MonitorMode::Auto => is_armed && !is_recording,
+            };
+            if should_pass_through {
+                output.copy_from(input);
+            } else {
+                output.clear();
+                return;
             }
+        } else {
+            // Non-input tracks: always pass player output through
+            output.copy_from(input);
         }
 
         // Apply volume

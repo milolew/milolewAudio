@@ -23,7 +23,7 @@ use vizia::vg;
 
 use crate::app_data::{AppData, AppEvent};
 use crate::types::time::PPQN;
-use crate::types::track::{ClipId, ClipState, TrackKind};
+use crate::types::track::{ClipId, ClipState, MonitorMode, TrackKind};
 use crate::widgets::timeline_ruler::TimelineRuler;
 
 use self::clip_renderer::{draw_clip, ClipDrawParams};
@@ -82,6 +82,20 @@ impl ArrangementView {
                             .width(Stretch(1.0))
                             .class("track-row");
                         }
+
+                        // "+ Add Track" buttons
+                        HStack::new(cx, |cx| {
+                            Button::new(cx, |cx| Label::new(cx, "+ Audio"))
+                                .on_press(|cx| cx.emit(AppEvent::AddTrack(TrackKind::Audio)))
+                                .class("add-track-btn");
+
+                            Button::new(cx, |cx| Label::new(cx, "+ MIDI"))
+                                .on_press(|cx| cx.emit(AppEvent::AddTrack(TrackKind::Midi)))
+                                .class("add-track-btn");
+                        })
+                        .height(Pixels(32.0))
+                        .width(Pixels(HEADER_WIDTH))
+                        .class("add-track-row");
                     })
                     .width(Stretch(1.0))
                     .height(Stretch(1.0))
@@ -102,7 +116,7 @@ impl View for ArrangementView {
 // TrackHeader — left panel showing track name, color, and kind
 // ---------------------------------------------------------------------------
 
-/// Track header with color bar, name, and type indicator.
+/// Track header with color bar, name, type indicator, record arm, and delete button.
 struct TrackHeader {
     track_index: usize,
 }
@@ -110,6 +124,33 @@ struct TrackHeader {
 impl TrackHeader {
     fn new(cx: &mut Context, track_index: usize) -> Handle<'_, Self> {
         Self { track_index }.build(cx, |_cx| {})
+    }
+
+    /// Hit-test the record arm button area (top-right corner, 20x16 px).
+    fn is_in_arm_button(bounds: BoundingBox, x: f32, y: f32, scale: f32) -> bool {
+        let btn_w = 20.0 * scale;
+        let btn_h = 16.0 * scale;
+        let btn_x = bounds.x + bounds.w - btn_w - 4.0 * scale;
+        let btn_y = bounds.y + 4.0 * scale;
+        x >= btn_x && x <= btn_x + btn_w && y >= btn_y && y <= btn_y + btn_h
+    }
+
+    /// Hit-test the delete button area (top-right corner, below arm button).
+    fn is_in_delete_button(bounds: BoundingBox, x: f32, y: f32, scale: f32) -> bool {
+        let btn_w = 20.0 * scale;
+        let btn_h = 16.0 * scale;
+        let btn_x = bounds.x + bounds.w - btn_w - 4.0 * scale;
+        let btn_y = bounds.y + 24.0 * scale;
+        x >= btn_x && x <= btn_x + btn_w && y >= btn_y && y <= btn_y + btn_h
+    }
+
+    /// Hit-test the monitor mode button area (below delete button).
+    fn is_in_monitor_button(bounds: BoundingBox, x: f32, y: f32, scale: f32) -> bool {
+        let btn_w = 28.0 * scale;
+        let btn_h = 16.0 * scale;
+        let btn_x = bounds.x + bounds.w - btn_w - 4.0 * scale;
+        let btn_y = bounds.y + 44.0 * scale;
+        x >= btn_x && x <= btn_x + btn_w && y >= btn_y && y <= btn_y + btn_h
     }
 }
 
@@ -132,17 +173,18 @@ impl View for TrackHeader {
         };
 
         let is_selected = app.arrangement.selected_track == Some(track.id);
+        let is_armed = track.record_armed;
         let [r, g, b] = track.color;
 
-        // -- Background --
+        // -- Background (red tint when record-armed) --
         let bg_alpha = if is_selected { 50 } else { 30 };
+        let (bg_r, bg_g, bg_b) = if is_armed {
+            (60 + bg_alpha, 30 + bg_alpha, 30 + bg_alpha)
+        } else {
+            (38 + bg_alpha, 38 + bg_alpha, 42 + bg_alpha)
+        };
         let mut bg_paint = vg::Paint::default();
-        bg_paint.set_color(vg::Color::from_argb(
-            255,
-            38 + bg_alpha,
-            38 + bg_alpha,
-            42 + bg_alpha,
-        ));
+        bg_paint.set_color(vg::Color::from_argb(255, bg_r, bg_g, bg_b));
         bg_paint.set_style(vg::PaintStyle::Fill);
         bg_paint.set_anti_alias(true);
         canvas.draw_rect(
@@ -194,14 +236,123 @@ impl View for TrackHeader {
         let kind_y = bounds.y + bounds.h * 0.38;
         canvas.draw_str(kind_label, (text_x, kind_y), &kind_font, &kind_paint);
 
-        // -- Track name --
+        // -- Track name (or editing indicator) --
+        let is_editing = app.arrangement.editing_track == Some(track.id);
+        let display_name = if is_editing {
+            &app.arrangement.editing_name
+        } else {
+            &track.name
+        };
+
         let mut name_paint = vg::Paint::default();
-        name_paint.set_color(vg::Color::from_argb(255, 220, 220, 220));
+        if is_editing {
+            name_paint.set_color(vg::Color::from_argb(255, 255, 255, 255));
+        } else {
+            name_paint.set_color(vg::Color::from_argb(255, 220, 220, 220));
+        }
         name_paint.set_anti_alias(true);
 
         let name_font = vg::Font::default();
         let name_y = bounds.y + bounds.h * 0.65;
-        canvas.draw_str(&track.name, (text_x, name_y), &name_font, &name_paint);
+        canvas.draw_str(display_name, (text_x, name_y), &name_font, &name_paint);
+
+        // Draw cursor when editing
+        if is_editing {
+            let (name_width, _) = name_font.measure_str(display_name, Some(&name_paint));
+            let cursor_x = text_x + name_width;
+            let mut cursor_paint = vg::Paint::default();
+            cursor_paint.set_color(vg::Color::from_argb(255, 255, 255, 255));
+            cursor_paint.set_style(vg::PaintStyle::Stroke);
+            cursor_paint.set_stroke_width(1.0 * scale);
+            cursor_paint.set_anti_alias(true);
+            canvas.draw_line(
+                (cursor_x + 1.0, name_y - 10.0 * scale),
+                (cursor_x + 1.0, name_y + 2.0 * scale),
+                &cursor_paint,
+            );
+        }
+
+        // -- Record arm button (top-right "R") --
+        let btn_w = 20.0 * scale;
+        let btn_h = 16.0 * scale;
+        let arm_x = bounds.x + bounds.w - btn_w - 4.0 * scale;
+        let arm_y = bounds.y + 4.0 * scale;
+
+        let mut arm_bg = vg::Paint::default();
+        if is_armed {
+            arm_bg.set_color(vg::Color::from_argb(255, 200, 50, 50));
+        } else {
+            arm_bg.set_color(vg::Color::from_argb(255, 60, 60, 60));
+        }
+        arm_bg.set_style(vg::PaintStyle::Fill);
+        arm_bg.set_anti_alias(true);
+        let arm_rect = vg::Rect::from_xywh(arm_x, arm_y, btn_w, btn_h);
+        canvas.draw_round_rect(arm_rect, 3.0 * scale, 3.0 * scale, &arm_bg);
+
+        let mut arm_text_paint = vg::Paint::default();
+        arm_text_paint.set_color(vg::Color::from_argb(255, 255, 255, 255));
+        arm_text_paint.set_anti_alias(true);
+        let arm_font = vg::Font::default();
+        canvas.draw_str(
+            "R",
+            (arm_x + 5.0 * scale, arm_y + 12.0 * scale),
+            &arm_font,
+            &arm_text_paint,
+        );
+
+        // -- Delete button ("X") --
+        let del_y = bounds.y + 24.0 * scale;
+        let mut del_bg = vg::Paint::default();
+        del_bg.set_color(vg::Color::from_argb(255, 60, 60, 60));
+        del_bg.set_style(vg::PaintStyle::Fill);
+        del_bg.set_anti_alias(true);
+        let del_rect = vg::Rect::from_xywh(arm_x, del_y, btn_w, btn_h);
+        canvas.draw_round_rect(del_rect, 3.0 * scale, 3.0 * scale, &del_bg);
+
+        let mut del_text_paint = vg::Paint::default();
+        del_text_paint.set_color(vg::Color::from_argb(180, 200, 200, 200));
+        del_text_paint.set_anti_alias(true);
+        canvas.draw_str(
+            "X",
+            (arm_x + 5.0 * scale, del_y + 12.0 * scale),
+            &arm_font,
+            &del_text_paint,
+        );
+
+        // -- Monitor mode button (audio tracks only) --
+        if track.kind == TrackKind::Audio {
+            let mon_w = 28.0 * scale;
+            let mon_y = bounds.y + 44.0 * scale;
+            let mon_x = bounds.x + bounds.w - mon_w - 4.0 * scale;
+
+            let mon_label = match track.monitor_mode {
+                MonitorMode::Off => "MOF",
+                MonitorMode::On => "MON",
+                MonitorMode::Auto => "AUT",
+            };
+            let mon_active = track.monitor_mode != MonitorMode::Off;
+
+            let mut mon_bg = vg::Paint::default();
+            if mon_active {
+                mon_bg.set_color(vg::Color::from_argb(255, 50, 120, 200));
+            } else {
+                mon_bg.set_color(vg::Color::from_argb(255, 55, 55, 55));
+            }
+            mon_bg.set_style(vg::PaintStyle::Fill);
+            mon_bg.set_anti_alias(true);
+            let mon_rect = vg::Rect::from_xywh(mon_x, mon_y, mon_w, btn_h);
+            canvas.draw_round_rect(mon_rect, 3.0 * scale, 3.0 * scale, &mon_bg);
+
+            let mut mon_text = vg::Paint::default();
+            mon_text.set_color(vg::Color::from_argb(255, 220, 220, 220));
+            mon_text.set_anti_alias(true);
+            canvas.draw_str(
+                mon_label,
+                (mon_x + 2.0 * scale, mon_y + 12.0 * scale),
+                &arm_font,
+                &mon_text,
+            );
+        }
 
         // -- Bottom separator line --
         let mut sep_paint = vg::Paint::default();
@@ -224,17 +375,129 @@ impl View for TrackHeader {
     }
 
     fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
-        event.map(|window_event, meta| {
-            if let WindowEvent::MouseDown(MouseButton::Left) = window_event {
-                if let Some(app) = cx.data::<AppData>() {
-                    if let Some(track) = app.tracks.get(self.track_index) {
-                        cx.emit(AppEvent::SelectTrack(track.id));
+        event.map(|window_event, meta| match window_event {
+            WindowEvent::MouseDown(MouseButton::Left) => {
+                let cursor_x = cx.mouse().cursor_x;
+                let cursor_y = cx.mouse().cursor_y;
+                let bounds = cx.bounds();
+                let scale = cx.scale_factor();
+
+                let action = cx.data::<AppData>().and_then(|app| {
+                    let track = app.tracks.get(self.track_index)?;
+                    let tid = track.id;
+                    if Self::is_in_arm_button(bounds, cursor_x, cursor_y, scale) {
+                        Some(HeaderAction::Arm(tid))
+                    } else if Self::is_in_delete_button(bounds, cursor_x, cursor_y, scale) {
+                        Some(HeaderAction::Delete(tid))
+                    } else if track.kind == TrackKind::Audio
+                        && Self::is_in_monitor_button(bounds, cursor_x, cursor_y, scale)
+                    {
+                        Some(HeaderAction::Monitor(tid))
+                    } else if app.arrangement.editing_track.is_some() {
+                        Some(HeaderAction::FinishEdit(tid))
+                    } else {
+                        Some(HeaderAction::Select(tid))
                     }
+                });
+
+                if let Some(action) = action {
+                    match action {
+                        HeaderAction::Arm(tid) => cx.emit(AppEvent::ToggleRecordArm(tid)),
+                        HeaderAction::Delete(tid) => cx.emit(AppEvent::RemoveTrack(tid)),
+                        HeaderAction::Monitor(tid) => cx.emit(AppEvent::CycleMonitorMode(tid)),
+                        HeaderAction::FinishEdit(tid) => {
+                            cx.emit(AppEvent::FinishRenameTrack);
+                            cx.emit(AppEvent::SelectTrack(tid));
+                        }
+                        HeaderAction::Select(tid) => cx.emit(AppEvent::SelectTrack(tid)),
+                    }
+                }
+                cx.focus();
+                meta.consume();
+            }
+            WindowEvent::MouseDoubleClick(MouseButton::Left) => {
+                let cursor_x = cx.mouse().cursor_x;
+                let cursor_y = cx.mouse().cursor_y;
+                let bounds = cx.bounds();
+                let scale = cx.scale_factor();
+
+                let rename_id = cx.data::<AppData>().and_then(|app| {
+                    let track = app.tracks.get(self.track_index)?;
+                    if !Self::is_in_arm_button(bounds, cursor_x, cursor_y, scale)
+                        && !Self::is_in_delete_button(bounds, cursor_x, cursor_y, scale)
+                        && !Self::is_in_monitor_button(bounds, cursor_x, cursor_y, scale)
+                    {
+                        Some(track.id)
+                    } else {
+                        None
+                    }
+                });
+
+                if let Some(tid) = rename_id {
+                    cx.emit(AppEvent::StartRenameTrack(tid));
+                    cx.focus();
                 }
                 meta.consume();
             }
+            WindowEvent::KeyDown(code, _) => {
+                let is_editing = cx.data::<AppData>().is_some_and(|app| {
+                    app.tracks
+                        .get(self.track_index)
+                        .is_some_and(|track| app.arrangement.editing_track == Some(track.id))
+                });
+
+                if is_editing {
+                    match code {
+                        Code::Enter | Code::NumpadEnter => {
+                            cx.emit(AppEvent::FinishRenameTrack);
+                            meta.consume();
+                        }
+                        Code::Escape => {
+                            cx.emit(AppEvent::CancelRenameTrack);
+                            meta.consume();
+                        }
+                        Code::Backspace => {
+                            if let Some(app) = cx.data::<AppData>() {
+                                let mut name = app.arrangement.editing_name.clone();
+                                name.pop();
+                                cx.emit(AppEvent::RenameTrackInput(name));
+                            }
+                            meta.consume();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            WindowEvent::CharInput(ch) => {
+                let is_editing = cx.data::<AppData>().is_some_and(|app| {
+                    app.tracks
+                        .get(self.track_index)
+                        .is_some_and(|track| app.arrangement.editing_track == Some(track.id))
+                });
+
+                if is_editing && !ch.is_control() {
+                    if let Some(app) = cx.data::<AppData>() {
+                        if app.arrangement.editing_name.len() < 64 {
+                            let mut name = app.arrangement.editing_name.clone();
+                            name.push(*ch);
+                            cx.emit(AppEvent::RenameTrackInput(name));
+                        }
+                    }
+                    meta.consume();
+                }
+            }
+            _ => {}
         });
     }
+}
+
+/// Actions dispatched from TrackHeader click handling.
+enum HeaderAction {
+    Arm(crate::types::track::TrackId),
+    Delete(crate::types::track::TrackId),
+    Monitor(crate::types::track::TrackId),
+    FinishEdit(crate::types::track::TrackId),
+    Select(crate::types::track::TrackId),
 }
 
 // ---------------------------------------------------------------------------

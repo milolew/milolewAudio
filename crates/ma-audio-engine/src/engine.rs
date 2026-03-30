@@ -16,6 +16,7 @@ use crate::callback::CallbackState;
 use crate::disk_io::{self, DiskCommand, DiskEvent};
 use crate::graph::edge::Edge;
 use crate::graph::nodes::input_node::InputNode;
+use crate::graph::nodes::metronome::MetronomeNode;
 use crate::graph::nodes::mixer_node::MixerNode;
 use crate::graph::nodes::output_node::OutputNode;
 use crate::graph::topology::AudioGraph;
@@ -88,6 +89,9 @@ pub struct EngineHandle {
     /// Track handles for reading atomic parameters from the UI.
     pub tracks: Vec<TrackHandle>,
 
+    /// Metronome enabled state (shared with audio thread).
+    pub metronome_enabled: Arc<AtomicBool>,
+
     /// Engine configuration snapshot.
     pub config: EngineConfig,
 }
@@ -101,6 +105,7 @@ pub struct TrackHandle {
     pub mute: Arc<AtomicBool>,
     pub solo: Arc<AtomicBool>,
     pub record_armed: Arc<AtomicBool>,
+    pub monitor_mode: Arc<std::sync::atomic::AtomicU8>,
 }
 
 /// Node ID counter for assigning unique IDs to graph nodes.
@@ -150,11 +155,18 @@ pub fn build_engine(
     let input_node_id = node_counter.next();
     let input_node = InputNode::new(input_node_id);
 
+    // Metronome gets one mixer input port
+    let num_mixer_inputs = config.initial_tracks.len() + 1; // +1 for metronome
     let mixer_node_id = node_counter.next();
-    let mixer_node = MixerNode::new(mixer_node_id, config.initial_tracks.len());
+    let mixer_node = MixerNode::new(mixer_node_id, num_mixer_inputs);
 
     let output_node_id = node_counter.next();
     let output_node = OutputNode::new(output_node_id);
+
+    // Create metronome node
+    let metronome_node_id = node_counter.next();
+    let metronome_node = MetronomeNode::new(metronome_node_id);
+    let metronome_enabled = Arc::clone(&metronome_node.enabled);
 
     // Create tracks and their nodes
     let mut all_nodes: Vec<Box<dyn crate::graph::node::AudioNode>> = Vec::new();
@@ -186,6 +198,7 @@ pub fn build_engine(
             mute: Arc::clone(&result.track.mute),
             solo: Arc::clone(&result.track.solo),
             record_armed: Arc::clone(&result.track.record_armed),
+            monitor_mode: Arc::clone(&result.track.monitor_mode),
         });
 
         // Connect: InputNode → TrackNode (if recording-capable)
@@ -224,11 +237,21 @@ pub fn build_engine(
         // For now, we don't start recording at engine init
     }
 
+    // Add metronome node (source — no inputs)
+    all_nodes.push(Box::new(metronome_node));
+
+    // Connect: MetronomeNode → MixerNode (last mixer input port)
+    let metronome_mixer_port = config.initial_tracks.len();
+    edges.push(Edge {
+        from_node: metronome_node_id,
+        from_port: 0,
+        to_node: mixer_node_id,
+        to_port: metronome_mixer_port,
+    });
+
     // Add mixer and output nodes
     all_nodes.push(Box::new(mixer_node));
-    let _mixer_index = all_nodes.len() - 1;
     all_nodes.push(Box::new(output_node));
-    let _output_index = all_nodes.len() - 1;
 
     // Connect: MixerNode → OutputNode
     edges.push(Edge {
@@ -244,6 +267,7 @@ pub fn build_engine(
     // Find node indices for the callback
     let input_node_graph_index = graph.find_node_index(input_node_id);
     let output_node_graph_index = graph.find_node_index(output_node_id);
+    let metronome_node_graph_index = graph.find_node_index(metronome_node_id);
 
     // Cache graph indices to avoid O(N) scans in the audio callback
     for track in &mut tracks {
@@ -259,6 +283,7 @@ pub fn build_engine(
         tracks,
         input_node_index: input_node_graph_index,
         output_node_index: output_node_graph_index,
+        metronome_node_index: metronome_node_graph_index,
         input_capture_reader: None,
         sample_rate: config.sample_rate as f32,
         last_callback_duration: std::time::Duration::ZERO,
@@ -277,6 +302,7 @@ pub fn build_engine(
         topology_command_sender: topology_cmd_tx,
         topology_command_receiver: topology_cmd_rx,
         tracks: track_handles,
+        metronome_enabled,
         config,
     };
 

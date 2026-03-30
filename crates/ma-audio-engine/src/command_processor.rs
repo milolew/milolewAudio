@@ -122,6 +122,11 @@ pub fn process_commands(
                     track.record_armed.store(armed, Ordering::Relaxed);
                 }
             }
+            EngineCommand::SetMonitorMode { track_id, mode } => {
+                if let Some(track) = find_track(tracks, track_id) {
+                    TrackNode::store_monitor_mode(&track.monitor_mode, mode);
+                }
+            }
             EngineCommand::StartRecording => {
                 transport.start_recording();
                 // Set is_recording on all armed track nodes (using cached graph index)
@@ -498,5 +503,25 @@ mod tests {
             .node_downcast_mut::<MidiPlayerNode>(idx)
             .unwrap();
         assert_eq!(player.clip_count(), 0);
+    }
+
+    #[test]
+    fn set_monitor_mode_command() {
+        let (mut producer, _, mut state) = test_engine();
+        let track_id = state.tracks[0].id;
+        producer
+            .push(EngineCommand::SetMonitorMode {
+                track_id,
+                mode: ma_core::parameters::MonitorMode::Auto,
+            })
+            .unwrap();
+        dispatch(&mut state);
+        // Auto = 2
+        assert_eq!(
+            state.tracks[0]
+                .monitor_mode
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
     }
 }
