@@ -23,6 +23,9 @@ const RESIZE_HIT_ZONE: f32 = 6.0;
 /// Minimum note duration after resize (in ticks).
 const MIN_NOTE_DURATION: Tick = 1;
 
+/// Height of the velocity lane in logical pixels.
+const VELOCITY_LANE_HEIGHT: f32 = 60.0;
+
 // ---------------------------------------------------------------------------
 // PianoRollView -- outer layout
 // ---------------------------------------------------------------------------
@@ -45,13 +48,29 @@ impl PianoRollView {
             })
             .class("quantize-toolbar");
 
-            // -- Main content: keyboard + grid --
-            HStack::new(cx, |cx| {
-                KeyboardStrip::new(cx).width(Pixels(KEYBOARD_WIDTH));
+            // -- Main content: keyboard + grid + velocity lane --
+            VStack::new(cx, |cx| {
+                HStack::new(cx, |cx| {
+                    KeyboardStrip::new(cx).width(Pixels(KEYBOARD_WIDTH));
 
-                PianoRollGrid::new(cx);
+                    PianoRollGrid::new(cx);
+                })
+                .height(Stretch(1.0))
+                .class("piano-roll-content");
+
+                // Velocity lane below the grid
+                HStack::new(cx, |cx| {
+                    // Spacer matching keyboard strip width
+                    Element::new(cx)
+                        .width(Pixels(KEYBOARD_WIDTH))
+                        .height(Stretch(1.0));
+
+                    VelocityLane::new(cx);
+                })
+                .height(Pixels(VELOCITY_LANE_HEIGHT))
+                .class("velocity-lane-row");
             })
-            .class("piano-roll-content");
+            .height(Stretch(1.0));
         })
     }
 
@@ -701,7 +720,9 @@ impl View for PianoRollGrid {
                         }
                     }
 
-                    PianoRollInteraction::Selecting { .. } | PianoRollInteraction::Idle => {}
+                    PianoRollInteraction::Selecting { .. }
+                    | PianoRollInteraction::VelocityDrag { .. }
+                    | PianoRollInteraction::Idle => {}
                 }
             }
 
@@ -744,7 +765,9 @@ impl View for PianoRollGrid {
 
                     PianoRollInteraction::ResizingNote { .. } => {}
 
-                    PianoRollInteraction::Selecting { .. } | PianoRollInteraction::Idle => {}
+                    PianoRollInteraction::Selecting { .. }
+                    | PianoRollInteraction::VelocityDrag { .. }
+                    | PianoRollInteraction::Idle => {}
                 }
 
                 cx.emit(AppEvent::UpdateInteraction(PianoRollInteraction::Idle));
@@ -807,6 +830,220 @@ fn hit_test_note_in_slice(
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// VelocityLane — velocity bar editor below the piano roll grid
+// ---------------------------------------------------------------------------
+
+/// Velocity lane — displays and edits note velocities as vertical bars.
+struct VelocityLane;
+
+impl VelocityLane {
+    fn new(cx: &mut Context) -> Handle<'_, Self> {
+        Self.build(cx, |_cx| {})
+    }
+
+    /// Convert a y position within the velocity lane to a velocity value (0-127).
+    fn y_to_velocity(y: f32, bounds_y: f32, bounds_h: f32) -> u8 {
+        let ratio = 1.0 - ((y - bounds_y) / bounds_h).clamp(0.0, 1.0);
+        (ratio * 127.0).round() as u8
+    }
+
+    /// Convert a velocity value to a bar height within the lane.
+    fn velocity_to_height(velocity: u8, bounds_h: f32) -> f32 {
+        (velocity as f32 / 127.0) * bounds_h
+    }
+
+    /// Find which note's bar is under the given x position.
+    fn hit_test_bar(app: &AppData, bounds: BoundingBox, mouse_x: f32) -> Option<Note> {
+        let pr = &app.piano_roll;
+        let clip_id = pr.active_clip_id?;
+        let clip = app.clips.iter().find(|c| c.id == clip_id)?;
+
+        let bar_min_width: f32 = 4.0;
+
+        for note in clip.notes.iter().rev() {
+            let nx = pr.tick_to_x(note.start_tick) + bounds.x;
+            let nw = ((note.duration_ticks as f64) * pr.zoom_x) as f32;
+            let bar_w = nw.max(bar_min_width);
+
+            if mouse_x >= nx && mouse_x <= nx + bar_w {
+                return Some(*note);
+            }
+        }
+        None
+    }
+}
+
+impl View for VelocityLane {
+    fn element(&self) -> Option<&'static str> {
+        Some("velocity-lane")
+    }
+
+    fn draw(&self, cx: &mut DrawContext, canvas: &Canvas) {
+        let bounds = cx.bounds();
+        let scale = cx.scale_factor();
+
+        let Some(app) = cx.data::<AppData>() else {
+            return;
+        };
+
+        // Background
+        let mut bg_paint = vg::Paint::default();
+        bg_paint.set_color(vg::Color::from_argb(255, 25, 25, 25));
+        bg_paint.set_style(vg::PaintStyle::Fill);
+        bg_paint.set_anti_alias(true);
+        canvas.draw_rect(
+            vg::Rect::from_xywh(bounds.x, bounds.y, bounds.w, bounds.h),
+            &bg_paint,
+        );
+
+        // Top separator
+        let mut sep_paint = vg::Paint::default();
+        sep_paint.set_color(vg::Color::from_argb(255, 80, 80, 80));
+        sep_paint.set_style(vg::PaintStyle::Stroke);
+        sep_paint.set_stroke_width(1.0 * scale);
+        sep_paint.set_anti_alias(true);
+        canvas.draw_line(
+            (bounds.x, bounds.y),
+            (bounds.x + bounds.w, bounds.y),
+            &sep_paint,
+        );
+
+        let pr = &app.piano_roll;
+        let clip_id = match pr.active_clip_id {
+            Some(id) => id,
+            None => return,
+        };
+        let clip = match app.clips.iter().find(|c| c.id == clip_id) {
+            Some(c) => c,
+            None => return,
+        };
+
+        let bar_min_width: f32 = 4.0;
+
+        let mut bar_paint = vg::Paint::default();
+        bar_paint.set_style(vg::PaintStyle::Fill);
+        bar_paint.set_anti_alias(true);
+
+        let mut selected_paint = vg::Paint::default();
+        selected_paint.set_style(vg::PaintStyle::Fill);
+        selected_paint.set_anti_alias(true);
+
+        for note in &clip.notes {
+            let nx = pr.tick_to_x(note.start_tick) + bounds.x;
+            let nw = ((note.duration_ticks as f64) * pr.zoom_x) as f32;
+            let bar_w = nw.max(bar_min_width);
+
+            // Cull off-screen bars
+            if nx + bar_w < bounds.x || nx > bounds.x + bounds.w {
+                continue;
+            }
+
+            let bar_h = Self::velocity_to_height(note.velocity, bounds.h);
+            let bar_y = bounds.y + bounds.h - bar_h;
+
+            let is_selected = pr.selected_notes.contains(&note.id);
+            let paint = if is_selected {
+                selected_paint.set_color(vg::Color::from_argb(220, 120, 200, 255));
+                &selected_paint
+            } else {
+                let alpha = 140u8 + ((note.velocity as u16 * 115) / 127) as u8;
+                bar_paint.set_color(vg::Color::from_argb(alpha, 80, 160, 220));
+                &bar_paint
+            };
+
+            canvas.draw_rect(
+                vg::Rect::from_xywh(nx, bar_y, bar_w.min(bounds.x + bounds.w - nx), bar_h),
+                paint,
+            );
+        }
+    }
+
+    fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
+        event.map(|window_event, meta| match window_event {
+            WindowEvent::MouseDown(MouseButton::Left) => {
+                let bounds = cx.bounds();
+                let mouse_x = cx.mouse().cursor_x;
+                let mouse_y = cx.mouse().cursor_y;
+
+                let Some(app) = cx.data::<AppData>() else {
+                    return;
+                };
+
+                if let Some(note) = Self::hit_test_bar(app, bounds, mouse_x) {
+                    let velocity = Self::y_to_velocity(mouse_y, bounds.y, bounds.h);
+                    cx.emit(AppEvent::UpdateInteraction(
+                        PianoRollInteraction::VelocityDrag {
+                            note_id: note.id,
+                            original_velocity: note.velocity,
+                        },
+                    ));
+                    cx.emit(AppEvent::SetNoteVelocity {
+                        note_id: note.id,
+                        velocity,
+                    });
+                    cx.capture();
+                    cx.needs_redraw();
+                }
+                meta.consume();
+            }
+
+            WindowEvent::MouseMove(_mouse_x, mouse_y) => {
+                let bounds = cx.bounds();
+
+                let Some(app) = cx.data::<AppData>() else {
+                    return;
+                };
+
+                if let PianoRollInteraction::VelocityDrag { note_id, .. } =
+                    &app.piano_roll.interaction
+                {
+                    let velocity = Self::y_to_velocity(*mouse_y, bounds.y, bounds.h);
+                    cx.emit(AppEvent::SetNoteVelocity {
+                        note_id: *note_id,
+                        velocity,
+                    });
+                    cx.needs_redraw();
+                }
+                meta.consume();
+            }
+
+            WindowEvent::MouseUp(MouseButton::Left) => {
+                let Some(app) = cx.data::<AppData>() else {
+                    return;
+                };
+
+                if let PianoRollInteraction::VelocityDrag {
+                    note_id,
+                    original_velocity,
+                } = &app.piano_roll.interaction
+                {
+                    // Read current velocity from clip for the undo action
+                    let new_velocity = app
+                        .piano_roll
+                        .active_clip_id
+                        .and_then(|cid| app.clips.iter().find(|c| c.id == cid))
+                        .and_then(|clip| clip.notes.iter().find(|n| n.id == *note_id))
+                        .map(|n| n.velocity)
+                        .unwrap_or(*original_velocity);
+
+                    cx.emit(AppEvent::FinishVelocityDrag {
+                        note_id: *note_id,
+                        original_velocity: *original_velocity,
+                        new_velocity,
+                    });
+                    cx.emit(AppEvent::UpdateInteraction(PianoRollInteraction::Idle));
+                    cx.release();
+                    cx.needs_redraw();
+                }
+                meta.consume();
+            }
+
+            _ => {}
+        });
+    }
 }
 
 #[cfg(test)]

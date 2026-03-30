@@ -49,6 +49,10 @@ pub enum PianoRollInteraction {
         current_x: f32,
         current_y: f32,
     },
+    VelocityDrag {
+        note_id: NoteId,
+        original_velocity: u8,
+    },
 }
 
 /// Full piano roll state.

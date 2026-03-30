@@ -162,6 +162,15 @@ pub enum AppEvent {
     SelectAllNotes,
     DeleteSelectedNotes,
     SetPianoRollTool(PianoRollTool),
+    SetNoteVelocity {
+        note_id: NoteId,
+        velocity: u8,
+    },
+    FinishVelocityDrag {
+        note_id: NoteId,
+        original_velocity: u8,
+        new_velocity: u8,
+    },
 
     // -- Piano roll --
     AddNote(Note),
@@ -1317,6 +1326,20 @@ impl AppData {
         action.apply(self);
         self.undo_manager.push(Box::new(action));
     }
+
+    fn handle_set_note_velocity(&mut self, note_id: NoteId, velocity: u8) {
+        let clip_id = match self.piano_roll.active_clip_id {
+            Some(id) => id,
+            None => return,
+        };
+        if let Some(clip) = self.clips.iter().find(|c| c.id == clip_id) {
+            let mut updated_clip = clip.clone();
+            if let Some(note) = updated_clip.notes.iter_mut().find(|n| n.id == note_id) {
+                note.velocity = velocity;
+            }
+            self.update_clip(updated_clip);
+        }
+    }
 }
 
 impl Model for AppData {
@@ -1617,6 +1640,28 @@ impl Model for AppData {
             }
             AppEvent::SetPianoRollTool(tool) => {
                 self.piano_roll.tool = *tool;
+            }
+            AppEvent::SetNoteVelocity { note_id, velocity } => {
+                self.handle_set_note_velocity(*note_id, *velocity);
+            }
+            AppEvent::FinishVelocityDrag {
+                note_id,
+                original_velocity,
+                new_velocity,
+            } => {
+                if original_velocity != new_velocity {
+                    let clip_id = match self.piano_roll.active_clip_id {
+                        Some(id) => id,
+                        None => return,
+                    };
+                    self.undo_manager
+                        .push(Box::new(undo_actions::SetNoteVelocityAction {
+                            clip_id,
+                            note_id: *note_id,
+                            old_velocity: *original_velocity,
+                            new_velocity: *new_velocity,
+                        }));
+                }
             }
 
             // -- Project shortcut --

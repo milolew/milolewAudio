@@ -527,6 +527,43 @@ impl UndoAction<AppData> for QuantizeNotesAction {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 16. SetNoteVelocityAction
+// ---------------------------------------------------------------------------
+
+pub struct SetNoteVelocityAction {
+    pub clip_id: ClipId,
+    pub note_id: NoteId,
+    pub old_velocity: u8,
+    pub new_velocity: u8,
+}
+
+impl UndoAction<AppData> for SetNoteVelocityAction {
+    fn description(&self) -> &str {
+        "Set Note Velocity"
+    }
+
+    fn apply(&self, state: &mut AppData) {
+        if let Some(clip) = state.clips.iter().find(|c| c.id == self.clip_id) {
+            let mut updated_clip = clip.clone();
+            if let Some(note) = updated_clip.notes.iter_mut().find(|n| n.id == self.note_id) {
+                note.velocity = self.new_velocity;
+            }
+            state.update_clip(updated_clip);
+        }
+    }
+
+    fn revert(&self, state: &mut AppData) {
+        if let Some(clip) = state.clips.iter().find(|c| c.id == self.clip_id) {
+            let mut updated_clip = clip.clone();
+            if let Some(note) = updated_clip.notes.iter_mut().find(|n| n.id == self.note_id) {
+                note.velocity = self.old_velocity;
+            }
+            state.update_clip(updated_clip);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
