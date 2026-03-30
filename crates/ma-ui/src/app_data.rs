@@ -157,6 +157,10 @@ pub enum AppEvent {
     ScrollArrangementX(f64),
     ScrollArrangementY(f32),
     ZoomArrangement(f64),
+    ZoomArrangementAt {
+        factor: f64,
+        cursor_tick: Tick,
+    },
 
     // -- Piano roll editing --
     TransposeSelectedNotes {
@@ -1710,7 +1714,26 @@ impl Model for AppData {
                 self.arrangement.scroll_y += dy;
             }
             AppEvent::ZoomArrangement(factor) => {
-                self.arrangement.zoom_x = (self.arrangement.zoom_x * factor).clamp(0.001, 1.0);
+                // Zoom around viewport center (for +/- keys)
+                let old_zoom = self.arrangement.zoom_x;
+                let new_zoom = (old_zoom * factor).clamp(0.001, 1.0);
+                let viewport_center = self.arrangement.scroll_x + 400.0 / old_zoom.max(0.001);
+                let pixel_offset = (viewport_center - self.arrangement.scroll_x) * old_zoom;
+                self.arrangement.zoom_x = new_zoom;
+                self.arrangement.scroll_x =
+                    (viewport_center - pixel_offset / new_zoom.max(0.001)).max(0.0);
+            }
+            AppEvent::ZoomArrangementAt {
+                factor,
+                cursor_tick,
+            } => {
+                // Zoom centered on cursor position
+                let old_zoom = self.arrangement.zoom_x;
+                let new_zoom = (old_zoom * factor).clamp(0.001, 1.0);
+                let pixel_offset = (*cursor_tick as f64 - self.arrangement.scroll_x) * old_zoom;
+                self.arrangement.zoom_x = new_zoom;
+                self.arrangement.scroll_x =
+                    (*cursor_tick as f64 - pixel_offset / new_zoom.max(0.001)).max(0.0);
             }
 
             // Piano roll note editing

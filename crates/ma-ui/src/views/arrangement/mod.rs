@@ -138,6 +138,14 @@ impl View for ArrangementView {
                         cx.emit(AppEvent::ToggleLoop);
                         meta.consume();
                     }
+                    Code::Equal | Code::NumpadAdd => {
+                        cx.emit(AppEvent::ZoomArrangement(1.2));
+                        meta.consume();
+                    }
+                    Code::Minus | Code::NumpadSubtract => {
+                        cx.emit(AppEvent::ZoomArrangement(1.0 / 1.2));
+                        meta.consume();
+                    }
                     _ => {}
                 }
             }
@@ -544,9 +552,16 @@ impl View for TrackLane {
                 let modifiers = cx.modifiers();
 
                 if modifiers.contains(Modifiers::CTRL) {
-                    // Ctrl + scroll = zoom
+                    // Ctrl + scroll = zoom centered on cursor
                     let factor = if *dy > 0.0 { 1.1 } else { 0.9 };
-                    cx.emit(AppEvent::ZoomArrangement(factor));
+                    if let Some(app) = cx.data::<AppData>() {
+                        let bounds = cx.bounds();
+                        let cursor_tick = app.arrangement.x_to_tick(cx.mouse().cursor_x - bounds.x);
+                        cx.emit(AppEvent::ZoomArrangementAt {
+                            factor,
+                            cursor_tick,
+                        });
+                    }
                 } else {
                     // Regular scroll: vertical with dy, horizontal with dx or shift+dy
                     if modifiers.contains(Modifiers::SHIFT) {
