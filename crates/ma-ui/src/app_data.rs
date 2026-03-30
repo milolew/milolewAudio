@@ -413,7 +413,7 @@ impl AppData {
             .collect()
     }
 
-    fn update_clip(&mut self, updated: ClipState) {
+    pub(crate) fn update_clip(&mut self, updated: ClipState) {
         if let Some(clip) = self.clips.iter_mut().find(|c| c.id == updated.id) {
             *clip = updated;
         }
@@ -435,7 +435,7 @@ impl AppData {
     }
 
     /// Send a UI command to whichever engine is active.
-    fn send_command(&mut self, cmd: EngineCommand) {
+    pub(crate) fn send_command(&mut self, cmd: EngineCommand) {
         let sent = match &mut self.engine {
             EngineMode::Real { bridge, .. } => Self::translate_command(&cmd)
                 .map(|core_cmd| bridge.send_command(core_cmd))
