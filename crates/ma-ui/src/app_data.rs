@@ -749,6 +749,19 @@ impl AppData {
         }
         // Return the buffer for reuse next frame
         self.response_buf = responses;
+
+        // Follow playhead: scroll to keep it visible during playback
+        if self.arrangement.follow_playhead
+            && (self.transport.is_playing || self.transport.is_recording)
+        {
+            let viewport_ticks = 800.0 / self.arrangement.zoom_x.max(0.001);
+            let threshold = self.arrangement.scroll_x + viewport_ticks * 0.8;
+            let playhead = self.transport.position as f64;
+
+            if playhead > threshold {
+                self.arrangement.scroll_x = (playhead - viewport_ticks * 0.3).max(0.0);
+            }
+        }
     }
 
     fn handle_recording_complete(
@@ -1163,6 +1176,7 @@ impl AppData {
     fn dispatch_transport(&mut self, event: &AppEvent) {
         match event {
             AppEvent::Play => {
+                self.arrangement.follow_playhead = true;
                 self.send_command(EngineCommand::Play);
             }
             AppEvent::Stop => {
@@ -1207,6 +1221,8 @@ impl AppData {
     }
 
     fn start_recording(&mut self) {
+        self.arrangement.follow_playhead = true;
+
         let armed_tracks: Vec<_> = self
             .tracks
             .iter()
@@ -1688,6 +1704,7 @@ impl Model for AppData {
             // Arrangement scroll/zoom
             AppEvent::ScrollArrangementX(dx) => {
                 self.arrangement.scroll_x = (self.arrangement.scroll_x + dx).max(0.0);
+                self.arrangement.follow_playhead = false;
             }
             AppEvent::ScrollArrangementY(dy) => {
                 self.arrangement.scroll_y += dy;
