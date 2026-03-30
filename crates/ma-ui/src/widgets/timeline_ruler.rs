@@ -2,7 +2,7 @@
 //!
 //! Draws a horizontal ruler at the top of the arrangement view showing
 //! bar numbers, beat lines, and the current playhead position. Clicking
-//! on the ruler sets the transport position.
+//! on the ruler sets the transport position. Shift+drag sets the loop region.
 
 use vizia::prelude::*;
 use vizia::vg;
@@ -11,11 +11,18 @@ use crate::app_data::{AppData, AppEvent};
 use crate::types::time::PPQN;
 
 /// Timeline ruler — horizontal bar/beat grid with playhead and loop region.
-pub struct TimelineRuler;
+pub struct TimelineRuler {
+    /// Active loop region drag (Shift+drag).
+    loop_drag: Option<LoopDragState>,
+}
+
+struct LoopDragState {
+    anchor_tick: i64,
+}
 
 impl TimelineRuler {
     pub fn new(cx: &mut Context) -> Handle<'_, Self> {
-        Self.build(cx, |_cx| {})
+        Self { loop_drag: None }.build(cx, |_cx| {})
     }
 }
 
@@ -85,7 +92,7 @@ impl View for TimelineRuler {
 
             if rx > lx {
                 let mut loop_paint = vg::Paint::default();
-                loop_paint.set_color(vg::Color::from_argb(40, 80, 160, 255));
+                loop_paint.set_color(vg::Color::from_argb(50, 255, 200, 40));
                 loop_paint.set_style(vg::PaintStyle::Fill);
                 loop_paint.set_anti_alias(true);
                 canvas.draw_rect(
@@ -95,7 +102,7 @@ impl View for TimelineRuler {
 
                 // Loop boundary lines
                 let mut loop_line_paint = vg::Paint::default();
-                loop_line_paint.set_color(vg::Color::from_argb(180, 80, 160, 255));
+                loop_line_paint.set_color(vg::Color::from_argb(200, 255, 200, 40));
                 loop_line_paint.set_style(vg::PaintStyle::Stroke);
                 loop_line_paint.set_stroke_width(1.0 * scale);
                 loop_line_paint.set_anti_alias(true);
@@ -241,16 +248,57 @@ impl View for TimelineRuler {
             WindowEvent::MouseDown(MouseButton::Left) => {
                 let bounds = cx.bounds();
                 let cursor_x = cx.mouse().cursor_x;
+                let modifiers = cx.modifiers();
 
                 if let Some(app) = cx.data::<AppData>() {
                     let relative_x = cursor_x - bounds.x;
                     let tick = ((relative_x as f64 / app.arrangement.zoom_x)
                         + app.arrangement.scroll_x) as i64;
                     let tick = tick.max(0);
-                    cx.emit(AppEvent::SetPosition(tick));
+
+                    if modifiers.contains(Modifiers::SHIFT) {
+                        // Shift+click: start loop region drag
+                        self.loop_drag = Some(LoopDragState { anchor_tick: tick });
+                        cx.emit(AppEvent::SetLoopRegion {
+                            start: tick,
+                            end: tick,
+                        });
+                        cx.capture();
+                    } else {
+                        // Normal click: set playhead position
+                        cx.emit(AppEvent::SetPosition(tick));
+                    }
                 }
 
+                cx.needs_redraw();
                 meta.consume();
+            }
+            WindowEvent::MouseMove(_x, _y) => {
+                if let Some(ref drag) = self.loop_drag {
+                    let bounds = cx.bounds();
+                    let cursor_x = cx.mouse().cursor_x;
+
+                    if let Some(app) = cx.data::<AppData>() {
+                        let relative_x = cursor_x - bounds.x;
+                        let tick = ((relative_x as f64 / app.arrangement.zoom_x)
+                            + app.arrangement.scroll_x) as i64;
+                        let tick = tick.max(0);
+
+                        let start = drag.anchor_tick.min(tick);
+                        let end = drag.anchor_tick.max(tick);
+                        cx.emit(AppEvent::SetLoopRegion { start, end });
+                    }
+
+                    cx.needs_redraw();
+                    meta.consume();
+                }
+            }
+            WindowEvent::MouseUp(MouseButton::Left) => {
+                if self.loop_drag.take().is_some() {
+                    cx.release();
+                    cx.needs_redraw();
+                    meta.consume();
+                }
             }
             WindowEvent::MouseScroll(_dx, dy) => {
                 // Horizontal scroll on ruler
@@ -258,7 +306,7 @@ impl View for TimelineRuler {
                     let scroll_amount = -*dy as f64 * 200.0 / app.arrangement.zoom_x.max(0.001);
                     cx.emit(AppEvent::ScrollArrangementX(scroll_amount));
                 }
-                cx.needs_redraw(); // REDRAW: on-change — horizontal scroll
+                cx.needs_redraw();
                 meta.consume();
             }
             _ => {}

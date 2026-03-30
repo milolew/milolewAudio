@@ -129,6 +129,10 @@ pub enum AppEvent {
     ToggleLoop,
     ToggleMetronome,
     ToggleFollowPlayhead,
+    SetLoopRegion {
+        start: Tick,
+        end: Tick,
+    },
 
     // -- View switching --
     SwitchView(ActiveView),
@@ -1193,6 +1197,11 @@ impl AppData {
             AppEvent::ToggleFollowPlayhead => {
                 self.transport.follow_playhead = !self.transport.follow_playhead;
             }
+            AppEvent::SetLoopRegion { start, end } => {
+                self.transport.loop_start = *start;
+                self.transport.loop_end = *end;
+                self.transport.loop_enabled = true;
+            }
             _ => {}
         }
     }
@@ -1532,7 +1541,8 @@ impl Model for AppData {
             | AppEvent::SetPosition(_)
             | AppEvent::ToggleLoop
             | AppEvent::ToggleMetronome
-            | AppEvent::ToggleFollowPlayhead => {
+            | AppEvent::ToggleFollowPlayhead
+            | AppEvent::SetLoopRegion { .. } => {
                 self.dispatch_transport(app_event);
             }
 
