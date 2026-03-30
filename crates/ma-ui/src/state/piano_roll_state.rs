@@ -4,6 +4,15 @@ use crate::types::midi::NoteId;
 use crate::types::time::{QuantizeGrid, Tick};
 use crate::types::track::ClipId;
 
+/// Active editing tool in the piano roll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PianoRollTool {
+    #[default]
+    Draw,
+    Erase,
+    Velocity,
+}
+
 /// Which edge of a note is being resized.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResizeEdge {
@@ -65,6 +74,8 @@ pub struct PianoRollState {
     pub selected_notes: Vec<NoteId>,
     /// Next note ID counter.
     pub next_note_id: u64,
+    /// Active editing tool.
+    pub tool: PianoRollTool,
 }
 
 impl Default for PianoRollState {
@@ -80,6 +91,7 @@ impl Default for PianoRollState {
             default_velocity: 100,
             selected_notes: Vec::new(),
             next_note_id: 1,
+            tool: PianoRollTool::Draw,
         }
     }
 }

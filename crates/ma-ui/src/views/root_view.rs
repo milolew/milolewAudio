@@ -92,4 +92,8 @@ impl View for RootView {
     fn element(&self) -> Option<&'static str> {
         Some("root-view")
     }
+
+    fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
+        super::keyboard::handle_key_event(cx, event);
+    }
 }

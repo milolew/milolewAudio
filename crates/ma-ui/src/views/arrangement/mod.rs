@@ -108,37 +108,6 @@ impl View for ArrangementView {
     fn element(&self) -> Option<&'static str> {
         Some("arrangement-view")
     }
-
-    fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
-        event.map(|window_event, meta| {
-            if let WindowEvent::KeyDown(code, _) = window_event {
-                let modifiers = cx.modifiers();
-                match code {
-                    Code::KeyE if modifiers.contains(Modifiers::CTRL) => {
-                        cx.emit(AppEvent::SplitClipAtPlayhead);
-                        meta.consume();
-                    }
-                    Code::KeyD if modifiers.contains(Modifiers::CTRL) => {
-                        cx.emit(AppEvent::DuplicateSelectedClips);
-                        meta.consume();
-                    }
-                    Code::KeyC if modifiers.contains(Modifiers::CTRL) => {
-                        cx.emit(AppEvent::CopySelectedClips);
-                        meta.consume();
-                    }
-                    Code::KeyV if modifiers.contains(Modifiers::CTRL) => {
-                        cx.emit(AppEvent::PasteClips);
-                        meta.consume();
-                    }
-                    Code::Delete | Code::Backspace => {
-                        cx.emit(AppEvent::DeleteSelectedClips);
-                        meta.consume();
-                    }
-                    _ => {}
-                }
-            }
-        });
-    }
 }
 
 // ---------------------------------------------------------------------------
