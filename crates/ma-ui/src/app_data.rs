@@ -1463,12 +1463,148 @@ impl AppData {
                     self.install_clip_in_engine(*clip_id);
                 }
             }
-            // Stub handlers for features implemented in later commits
-            AppEvent::SplitClipAtPlayhead
-            | AppEvent::DuplicateSelectedClips
-            | AppEvent::DeleteSelectedClips
-            | AppEvent::CopySelectedClips
-            | AppEvent::PasteClips => {}
+            AppEvent::SplitClipAtPlayhead => {
+                let playhead = self.transport.position;
+                let selected: Vec<ClipId> = self
+                    .arrangement
+                    .selected_clips
+                    .clips
+                    .iter()
+                    .copied()
+                    .collect();
+                let mut new_right_ids = Vec::new();
+
+                for clip_id in selected {
+                    let Some(idx) = self.clips.iter().position(|c| c.id == clip_id) else {
+                        continue;
+                    };
+                    let clip = self.clips[idx].clone();
+                    let clip_end = clip.start_tick + clip.duration_ticks;
+
+                    // Only split if playhead is strictly inside the clip
+                    if playhead <= clip.start_tick || playhead >= clip_end {
+                        continue;
+                    }
+
+                    self.remove_clip_from_engine(clip_id, clip.track_id);
+
+                    // Left half: keep original ID, shorten duration
+                    let left_duration = playhead - clip.start_tick;
+                    let mut left = clip.clone();
+                    left.duration_ticks = left_duration;
+                    if left.audio_file.is_none() {
+                        left.notes.retain(|n| n.start_tick < left_duration);
+                        for note in &mut left.notes {
+                            if note.start_tick + note.duration_ticks > left_duration {
+                                note.duration_ticks = left_duration - note.start_tick;
+                            }
+                        }
+                    }
+
+                    // Right half: new ID, starts at playhead
+                    let right_id = ClipId::new();
+                    let mut right = clip.clone();
+                    right.id = right_id;
+                    right.start_tick = playhead;
+                    right.duration_ticks = clip_end - playhead;
+                    right.name = format!("{} (R)", clip.name);
+                    if right.audio_file.is_none() {
+                        // Shift notes to clip-local coordinates and trim
+                        right
+                            .notes
+                            .retain(|n| n.start_tick + n.duration_ticks > left_duration);
+                        for note in &mut right.notes {
+                            if note.start_tick < left_duration {
+                                let overshoot = left_duration - note.start_tick;
+                                note.start_tick = 0;
+                                note.duration_ticks = note.duration_ticks.saturating_sub(overshoot);
+                            } else {
+                                note.start_tick -= left_duration;
+                            }
+                        }
+                    }
+
+                    self.clips[idx] = left;
+                    self.install_clip_in_engine(clip_id);
+
+                    new_right_ids.push(right_id);
+                    self.clips.push(right);
+                    self.install_clip_in_engine(right_id);
+                }
+
+                // Select both halves
+                if !new_right_ids.is_empty() {
+                    let mut sel = self.arrangement.selected_clips.clips.clone();
+                    for id in new_right_ids {
+                        sel.insert(id);
+                    }
+                    self.arrangement.selected_clips = ClipSelection { clips: sel };
+                }
+            }
+            AppEvent::DuplicateSelectedClips => {
+                let selected: Vec<ClipId> = self
+                    .arrangement
+                    .selected_clips
+                    .clips
+                    .iter()
+                    .copied()
+                    .collect();
+                let mut new_ids = Vec::new();
+
+                for clip_id in selected {
+                    if let Some(clip) = self.clips.iter().find(|c| c.id == clip_id).cloned() {
+                        let new_id = ClipId::new();
+                        let mut dup = clip.clone();
+                        dup.id = new_id;
+                        dup.start_tick = clip.start_tick + clip.duration_ticks;
+                        dup.name = format!("{} (copy)", clip.name);
+
+                        // New note IDs for MIDI clips
+                        for note in &mut dup.notes {
+                            note.id = self.piano_roll.alloc_note_id();
+                        }
+
+                        // Share audio data
+                        if let Some(peaks) = self.audio_peaks.get(&clip.id).cloned() {
+                            self.audio_peaks.insert(new_id, peaks);
+                        }
+                        if let Some(data) = self.audio_data.get(&clip.id).cloned() {
+                            self.audio_data.insert(new_id, data);
+                        }
+
+                        new_ids.push(new_id);
+                        self.clips.push(dup);
+                        self.install_clip_in_engine(new_id);
+                    }
+                }
+
+                // Select the duplicates
+                self.arrangement.selected_clips = ClipSelection {
+                    clips: new_ids.into_iter().collect(),
+                };
+            }
+            AppEvent::DeleteSelectedClips => {
+                let selected: Vec<ClipId> = self
+                    .arrangement
+                    .selected_clips
+                    .clips
+                    .iter()
+                    .copied()
+                    .collect();
+
+                for clip_id in &selected {
+                    if let Some(clip) = self.clips.iter().find(|c| c.id == *clip_id).cloned() {
+                        self.remove_clip_from_engine(*clip_id, clip.track_id);
+                        self.audio_peaks.remove(clip_id);
+                        self.audio_data.remove(clip_id);
+                    }
+                }
+
+                self.clips.retain(|c| !selected.contains(&c.id));
+                self.arrangement.selected_clips = ClipSelection::default();
+            }
+            // Stub handlers for copy/paste (next commit)
+            AppEvent::CopySelectedClips | AppEvent::PasteClips => {}
             _ => {}
         }
     }
