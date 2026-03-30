@@ -227,14 +227,41 @@ impl View for TrackHeader {
         let kind_y = bounds.y + bounds.h * 0.38;
         canvas.draw_str(kind_label, (text_x, kind_y), &kind_font, &kind_paint);
 
-        // -- Track name --
+        // -- Track name (or editing indicator) --
+        let is_editing = app.arrangement.editing_track == Some(track.id);
+        let display_name = if is_editing {
+            &app.arrangement.editing_name
+        } else {
+            &track.name
+        };
+
         let mut name_paint = vg::Paint::default();
-        name_paint.set_color(vg::Color::from_argb(255, 220, 220, 220));
+        if is_editing {
+            name_paint.set_color(vg::Color::from_argb(255, 255, 255, 255));
+        } else {
+            name_paint.set_color(vg::Color::from_argb(255, 220, 220, 220));
+        }
         name_paint.set_anti_alias(true);
 
         let name_font = vg::Font::default();
         let name_y = bounds.y + bounds.h * 0.65;
-        canvas.draw_str(&track.name, (text_x, name_y), &name_font, &name_paint);
+        canvas.draw_str(display_name, (text_x, name_y), &name_font, &name_paint);
+
+        // Draw cursor when editing
+        if is_editing {
+            let (name_width, _) = name_font.measure_str(display_name, Some(&name_paint));
+            let cursor_x = text_x + name_width;
+            let mut cursor_paint = vg::Paint::default();
+            cursor_paint.set_color(vg::Color::from_argb(255, 255, 255, 255));
+            cursor_paint.set_style(vg::PaintStyle::Stroke);
+            cursor_paint.set_stroke_width(1.0 * scale);
+            cursor_paint.set_anti_alias(true);
+            canvas.draw_line(
+                (cursor_x + 1.0, name_y - 10.0 * scale),
+                (cursor_x + 1.0, name_y + 2.0 * scale),
+                &cursor_paint,
+            );
+        }
 
         // -- Record arm button (top-right "R") --
         let btn_w = 20.0 * scale;
@@ -304,26 +331,114 @@ impl View for TrackHeader {
     }
 
     fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
-        event.map(|window_event, meta| {
-            if let WindowEvent::MouseDown(MouseButton::Left) = window_event {
+        event.map(|window_event, meta| match window_event {
+            WindowEvent::MouseDown(MouseButton::Left) => {
                 let cursor_x = cx.mouse().cursor_x;
                 let cursor_y = cx.mouse().cursor_y;
                 let bounds = cx.bounds();
                 let scale = cx.scale_factor();
 
-                if let Some(app) = cx.data::<AppData>() {
-                    if let Some(track) = app.tracks.get(self.track_index) {
-                        if Self::is_in_arm_button(bounds, cursor_x, cursor_y, scale) {
-                            cx.emit(AppEvent::ToggleRecordArm(track.id));
-                        } else if Self::is_in_delete_button(bounds, cursor_x, cursor_y, scale) {
-                            cx.emit(AppEvent::RemoveTrack(track.id));
+                // Extract needed data before emitting (borrow rules)
+                let action = cx.data::<AppData>().and_then(|app| {
+                    let track = app.tracks.get(self.track_index)?;
+                    let tid = track.id;
+                    if Self::is_in_arm_button(bounds, cursor_x, cursor_y, scale) {
+                        Some(('a', tid)) // arm
+                    } else if Self::is_in_delete_button(bounds, cursor_x, cursor_y, scale) {
+                        Some(('d', tid)) // delete
+                    } else {
+                        let editing = app.arrangement.editing_track.is_some();
+                        if editing {
+                            Some(('f', tid))
                         } else {
-                            cx.emit(AppEvent::SelectTrack(track.id));
+                            Some(('s', tid))
                         }
                     }
+                });
+
+                if let Some((action_type, tid)) = action {
+                    match action_type {
+                        'a' => cx.emit(AppEvent::ToggleRecordArm(tid)),
+                        'd' => cx.emit(AppEvent::RemoveTrack(tid)),
+                        'f' => {
+                            cx.emit(AppEvent::FinishRenameTrack);
+                            cx.emit(AppEvent::SelectTrack(tid));
+                        }
+                        _ => cx.emit(AppEvent::SelectTrack(tid)),
+                    }
+                }
+                cx.focus();
+                meta.consume();
+            }
+            WindowEvent::MouseDoubleClick(MouseButton::Left) => {
+                let cursor_x = cx.mouse().cursor_x;
+                let cursor_y = cx.mouse().cursor_y;
+                let bounds = cx.bounds();
+                let scale = cx.scale_factor();
+
+                let rename_id = cx.data::<AppData>().and_then(|app| {
+                    let track = app.tracks.get(self.track_index)?;
+                    if !Self::is_in_arm_button(bounds, cursor_x, cursor_y, scale)
+                        && !Self::is_in_delete_button(bounds, cursor_x, cursor_y, scale)
+                    {
+                        Some(track.id)
+                    } else {
+                        None
+                    }
+                });
+
+                if let Some(tid) = rename_id {
+                    cx.emit(AppEvent::StartRenameTrack(tid));
+                    cx.focus();
                 }
                 meta.consume();
             }
+            WindowEvent::KeyDown(code, _) => {
+                let is_editing = cx.data::<AppData>().is_some_and(|app| {
+                    app.tracks
+                        .get(self.track_index)
+                        .is_some_and(|track| app.arrangement.editing_track == Some(track.id))
+                });
+
+                if is_editing {
+                    match code {
+                        Code::Enter | Code::NumpadEnter => {
+                            cx.emit(AppEvent::FinishRenameTrack);
+                            meta.consume();
+                        }
+                        Code::Escape => {
+                            cx.emit(AppEvent::CancelRenameTrack);
+                            meta.consume();
+                        }
+                        Code::Backspace => {
+                            if let Some(app) = cx.data::<AppData>() {
+                                let mut name = app.arrangement.editing_name.clone();
+                                name.pop();
+                                cx.emit(AppEvent::RenameTrackInput(name));
+                            }
+                            meta.consume();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            WindowEvent::CharInput(ch) => {
+                let is_editing = cx.data::<AppData>().is_some_and(|app| {
+                    app.tracks
+                        .get(self.track_index)
+                        .is_some_and(|track| app.arrangement.editing_track == Some(track.id))
+                });
+
+                if is_editing && !ch.is_control() {
+                    if let Some(app) = cx.data::<AppData>() {
+                        let mut name = app.arrangement.editing_name.clone();
+                        name.push(*ch);
+                        cx.emit(AppEvent::RenameTrackInput(name));
+                    }
+                    meta.consume();
+                }
+            }
+            _ => {}
         });
     }
 }

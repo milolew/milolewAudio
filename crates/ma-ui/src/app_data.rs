@@ -180,6 +180,10 @@ pub enum AppEvent {
         track_id: TrackId,
         name: String,
     },
+    StartRenameTrack(TrackId),
+    FinishRenameTrack,
+    CancelRenameTrack,
+    RenameTrackInput(String),
     ToggleRecordArm(TrackId),
 
     // -- Browser --
@@ -1374,6 +1378,29 @@ impl Model for AppData {
                 if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
                     track.name = name.clone();
                 }
+            }
+            AppEvent::StartRenameTrack(track_id) => {
+                if let Some(track) = self.tracks.iter().find(|t| t.id == *track_id) {
+                    self.arrangement.editing_name = track.name.clone();
+                    self.arrangement.editing_track = Some(*track_id);
+                }
+            }
+            AppEvent::FinishRenameTrack => {
+                if let Some(track_id) = self.arrangement.editing_track.take() {
+                    let name = std::mem::take(&mut self.arrangement.editing_name);
+                    if !name.is_empty() {
+                        if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                            track.name = name;
+                        }
+                    }
+                }
+            }
+            AppEvent::CancelRenameTrack => {
+                self.arrangement.editing_track = None;
+                self.arrangement.editing_name.clear();
+            }
+            AppEvent::RenameTrackInput(text) => {
+                self.arrangement.editing_name = text.clone();
             }
             AppEvent::ToggleRecordArm(track_id) => {
                 let (new_armed, core_track_id) =
