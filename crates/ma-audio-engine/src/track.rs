@@ -4,7 +4,7 @@
 //! The Track struct bridges the gap between the project-level track concept
 //! and the per-sample graph processing.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 
 use ma_core::ids::{NodeId, TrackId};
@@ -53,6 +53,7 @@ pub struct Track {
     pub mute: Arc<AtomicBool>,
     pub solo: Arc<AtomicBool>,
     pub record_armed: Arc<AtomicBool>,
+    pub monitor_mode: Arc<AtomicU8>,
 }
 
 /// Result of creating a new track — contains the nodes and recording consumer.
@@ -116,6 +117,7 @@ pub fn create_track(
     let mute = Arc::clone(&track_node.mute);
     let solo = Arc::clone(&track_node.solo);
     let record_armed = Arc::clone(&track_node.record_armed);
+    let monitor_mode = Arc::clone(&track_node.monitor_mode);
 
     let track = Track {
         id: track_id,
@@ -129,6 +131,7 @@ pub fn create_track(
         mute,
         solo,
         record_armed,
+        monitor_mode,
     };
 
     TrackCreationResult {

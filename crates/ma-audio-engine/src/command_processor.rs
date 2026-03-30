@@ -122,6 +122,11 @@ pub fn process_commands(
                     track.record_armed.store(armed, Ordering::Relaxed);
                 }
             }
+            EngineCommand::SetMonitorMode { track_id, mode } => {
+                if let Some(track) = find_track(tracks, track_id) {
+                    TrackNode::store_monitor_mode(&track.monitor_mode, mode);
+                }
+            }
             EngineCommand::StartRecording => {
                 transport.start_recording();
                 // Set is_recording on all armed track nodes (using cached graph index)

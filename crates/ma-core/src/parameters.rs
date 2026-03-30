@@ -134,6 +134,19 @@ impl TryFrom<u8> for ControllerNumber {
     }
 }
 
+/// Input monitoring mode for recording-capable tracks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MonitorMode {
+    /// No monitoring — input is only heard when recording.
+    #[default]
+    Off,
+    /// Always pass input through to output (even when not recording).
+    On,
+    /// Pass input through only when record-armed but NOT recording
+    /// (software monitoring — avoids doubling when the DAW is recording).
+    Auto,
+}
+
 /// Whether a track plays audio files or MIDI.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TrackType {

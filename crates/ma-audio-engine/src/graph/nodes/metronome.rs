@@ -7,10 +7,10 @@ use std::any::Any;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use crate::graph::node::{AudioNode, ProcessContext};
 use ma_core::audio_buffer::AudioBuffer;
 use ma_core::ids::NodeId;
 use ma_core::parameters::TransportState;
-use crate::graph::node::{AudioNode, ProcessContext};
 
 /// Regular click frequency (Hz).
 const CLICK_FREQ: f64 = 1000.0;

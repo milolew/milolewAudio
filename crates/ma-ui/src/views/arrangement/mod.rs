@@ -23,7 +23,7 @@ use vizia::vg;
 
 use crate::app_data::{AppData, AppEvent};
 use crate::types::time::PPQN;
-use crate::types::track::{ClipId, ClipState, TrackKind};
+use crate::types::track::{ClipId, ClipState, MonitorMode, TrackKind};
 use crate::widgets::timeline_ruler::TimelineRuler;
 
 use self::clip_renderer::{draw_clip, ClipDrawParams};
@@ -141,6 +141,15 @@ impl TrackHeader {
         let btn_h = 16.0 * scale;
         let btn_x = bounds.x + bounds.w - btn_w - 4.0 * scale;
         let btn_y = bounds.y + 24.0 * scale;
+        x >= btn_x && x <= btn_x + btn_w && y >= btn_y && y <= btn_y + btn_h
+    }
+
+    /// Hit-test the monitor mode button area (below delete button).
+    fn is_in_monitor_button(bounds: BoundingBox, x: f32, y: f32, scale: f32) -> bool {
+        let btn_w = 28.0 * scale;
+        let btn_h = 16.0 * scale;
+        let btn_x = bounds.x + bounds.w - btn_w - 4.0 * scale;
+        let btn_y = bounds.y + 44.0 * scale;
         x >= btn_x && x <= btn_x + btn_w && y >= btn_y && y <= btn_y + btn_h
     }
 }
@@ -310,6 +319,41 @@ impl View for TrackHeader {
             &del_text_paint,
         );
 
+        // -- Monitor mode button (audio tracks only) --
+        if track.kind == TrackKind::Audio {
+            let mon_w = 28.0 * scale;
+            let mon_y = bounds.y + 44.0 * scale;
+            let mon_x = bounds.x + bounds.w - mon_w - 4.0 * scale;
+
+            let mon_label = match track.monitor_mode {
+                MonitorMode::Off => "MOF",
+                MonitorMode::On => "MON",
+                MonitorMode::Auto => "AUT",
+            };
+            let mon_active = track.monitor_mode != MonitorMode::Off;
+
+            let mut mon_bg = vg::Paint::default();
+            if mon_active {
+                mon_bg.set_color(vg::Color::from_argb(255, 50, 120, 200));
+            } else {
+                mon_bg.set_color(vg::Color::from_argb(255, 55, 55, 55));
+            }
+            mon_bg.set_style(vg::PaintStyle::Fill);
+            mon_bg.set_anti_alias(true);
+            let mon_rect = vg::Rect::from_xywh(mon_x, mon_y, mon_w, btn_h);
+            canvas.draw_round_rect(mon_rect, 3.0 * scale, 3.0 * scale, &mon_bg);
+
+            let mut mon_text = vg::Paint::default();
+            mon_text.set_color(vg::Color::from_argb(255, 220, 220, 220));
+            mon_text.set_anti_alias(true);
+            canvas.draw_str(
+                mon_label,
+                (mon_x + 2.0 * scale, mon_y + 12.0 * scale),
+                &arm_font,
+                &mon_text,
+            );
+        }
+
         // -- Bottom separator line --
         let mut sep_paint = vg::Paint::default();
         sep_paint.set_color(vg::Color::from_argb(255, 50, 50, 50));
@@ -346,6 +390,8 @@ impl View for TrackHeader {
                         Some(('a', tid)) // arm
                     } else if Self::is_in_delete_button(bounds, cursor_x, cursor_y, scale) {
                         Some(('d', tid)) // delete
+                    } else if Self::is_in_monitor_button(bounds, cursor_x, cursor_y, scale) {
+                        Some(('m', tid)) // monitor mode cycle
                     } else {
                         let editing = app.arrangement.editing_track.is_some();
                         if editing {
@@ -360,6 +406,7 @@ impl View for TrackHeader {
                     match action_type {
                         'a' => cx.emit(AppEvent::ToggleRecordArm(tid)),
                         'd' => cx.emit(AppEvent::RemoveTrack(tid)),
+                        'm' => cx.emit(AppEvent::CycleMonitorMode(tid)),
                         'f' => {
                             cx.emit(AppEvent::FinishRenameTrack);
                             cx.emit(AppEvent::SelectTrack(tid));

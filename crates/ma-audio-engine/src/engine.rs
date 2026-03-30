@@ -105,6 +105,7 @@ pub struct TrackHandle {
     pub mute: Arc<AtomicBool>,
     pub solo: Arc<AtomicBool>,
     pub record_armed: Arc<AtomicBool>,
+    pub monitor_mode: Arc<std::sync::atomic::AtomicU8>,
 }
 
 /// Node ID counter for assigning unique IDs to graph nodes.
@@ -197,6 +198,7 @@ pub fn build_engine(
             mute: Arc::clone(&result.track.mute),
             solo: Arc::clone(&result.track.solo),
             record_armed: Arc::clone(&result.track.record_armed),
+            monitor_mode: Arc::clone(&result.track.monitor_mode),
         });
 
         // Connect: InputNode → TrackNode (if recording-capable)

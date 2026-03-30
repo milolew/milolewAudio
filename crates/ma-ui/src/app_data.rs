@@ -186,6 +186,7 @@ pub enum AppEvent {
     CancelRenameTrack,
     RenameTrackInput(String),
     ToggleRecordArm(TrackId),
+    CycleMonitorMode(TrackId),
 
     // -- Browser --
     BrowserRefresh,
@@ -503,6 +504,10 @@ impl AppData {
                 track_id: *track_id,
                 armed: *armed,
             }),
+            EngineCommand::SetMonitorMode { track_id, mode } => Some(CoreCommand::SetMonitorMode {
+                track_id: *track_id,
+                mode: *mode,
+            }),
             _ => None,
         }
     }
@@ -800,6 +805,7 @@ impl AppData {
                 mute: track_file.muted,
                 solo: false,
                 record_armed: false,
+                monitor_mode: ma_core::MonitorMode::Off,
                 color: track_file.color,
             });
 
@@ -1051,6 +1057,7 @@ impl AppData {
             mute: false,
             solo: false,
             record_armed: false,
+            monitor_mode: ma_core::MonitorMode::Off,
             color,
         };
         self.tracks.push(track_state);
@@ -1422,6 +1429,21 @@ impl Model for AppData {
                     self.send_command(EngineCommand::ArmTrack {
                         track_id: core_track_id,
                         armed,
+                    });
+                }
+            }
+            AppEvent::CycleMonitorMode(track_id) => {
+                use crate::types::track::MonitorMode;
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
+                    let new_mode = match track.monitor_mode {
+                        MonitorMode::Off => MonitorMode::On,
+                        MonitorMode::On => MonitorMode::Auto,
+                        MonitorMode::Auto => MonitorMode::Off,
+                    };
+                    track.monitor_mode = new_mode;
+                    self.send_command(EngineCommand::SetMonitorMode {
+                        track_id: *track_id,
+                        mode: new_mode,
                     });
                 }
             }

@@ -2,7 +2,7 @@
 
 use crate::types::midi::{Note, NoteId};
 use crate::types::time::{Tick, TimeSignature};
-use crate::types::track::{ClipId, TrackId};
+use crate::types::track::{ClipId, MonitorMode, TrackId};
 
 /// All commands the UI can send to the audio engine.
 #[derive(Debug, Clone)]
@@ -38,6 +38,10 @@ pub enum EngineCommand {
     ArmTrack {
         track_id: TrackId,
         armed: bool,
+    },
+    SetMonitorMode {
+        track_id: TrackId,
+        mode: MonitorMode,
     },
 
     // MIDI preview (live playing from UI)
