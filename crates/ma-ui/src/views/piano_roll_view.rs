@@ -833,6 +833,22 @@ fn hit_test_note_in_slice(
 }
 
 // ---------------------------------------------------------------------------
+// Velocity coordinate conversions (module-level for testability)
+// ---------------------------------------------------------------------------
+
+/// Convert a y position within the velocity lane to a velocity value (0-127).
+/// Top of lane (y == bounds_y) returns 127, bottom (y == bounds_y + bounds_h) returns 0.
+fn y_to_velocity(y: f32, bounds_y: f32, bounds_h: f32) -> u8 {
+    let ratio = 1.0 - ((y - bounds_y) / bounds_h).clamp(0.0, 1.0);
+    (ratio * 127.0).round() as u8
+}
+
+/// Convert a velocity value to a bar height within the lane.
+fn velocity_to_height(velocity: u8, bounds_h: f32) -> f32 {
+    (velocity as f32 / 127.0) * bounds_h
+}
+
+// ---------------------------------------------------------------------------
 // VelocityLane — velocity bar editor below the piano roll grid
 // ---------------------------------------------------------------------------
 
@@ -842,17 +858,6 @@ struct VelocityLane;
 impl VelocityLane {
     fn new(cx: &mut Context) -> Handle<'_, Self> {
         Self.build(cx, |_cx| {})
-    }
-
-    /// Convert a y position within the velocity lane to a velocity value (0-127).
-    fn y_to_velocity(y: f32, bounds_y: f32, bounds_h: f32) -> u8 {
-        let ratio = 1.0 - ((y - bounds_y) / bounds_h).clamp(0.0, 1.0);
-        (ratio * 127.0).round() as u8
-    }
-
-    /// Convert a velocity value to a bar height within the lane.
-    fn velocity_to_height(velocity: u8, bounds_h: f32) -> f32 {
-        (velocity as f32 / 127.0) * bounds_h
     }
 
     /// Find which note's bar is under the given x position.
@@ -941,7 +946,7 @@ impl View for VelocityLane {
                 continue;
             }
 
-            let bar_h = Self::velocity_to_height(note.velocity, bounds.h);
+            let bar_h = velocity_to_height(note.velocity, bounds.h);
             let bar_y = bounds.y + bounds.h - bar_h;
 
             let is_selected = pr.selected_notes.contains(&note.id);
@@ -973,7 +978,7 @@ impl View for VelocityLane {
                 };
 
                 if let Some(note) = Self::hit_test_bar(app, bounds, mouse_x) {
-                    let velocity = Self::y_to_velocity(mouse_y, bounds.y, bounds.h);
+                    let velocity = y_to_velocity(mouse_y, bounds.y, bounds.h);
                     cx.emit(AppEvent::UpdateInteraction(
                         PianoRollInteraction::VelocityDrag {
                             note_id: note.id,
@@ -1000,7 +1005,7 @@ impl View for VelocityLane {
                 if let PianoRollInteraction::VelocityDrag { note_id, .. } =
                     &app.piano_roll.interaction
                 {
-                    let velocity = Self::y_to_velocity(*mouse_y, bounds.y, bounds.h);
+                    let velocity = y_to_velocity(*mouse_y, bounds.y, bounds.h);
                     cx.emit(AppEvent::SetNoteVelocity {
                         note_id: *note_id,
                         velocity,
@@ -1296,5 +1301,76 @@ mod tests {
         );
         assert!(result.is_some());
         assert_eq!(result.unwrap().0.id, NoteId(1));
+    }
+
+    // -- Velocity lane coordinate conversion tests --
+
+    #[test]
+    fn y_to_velocity_at_top_returns_max() {
+        // y == bounds_y means top of lane => velocity 127
+        let vel = y_to_velocity(100.0, 100.0, 60.0);
+        assert_eq!(vel, 127);
+    }
+
+    #[test]
+    fn y_to_velocity_at_bottom_returns_zero() {
+        // y == bounds_y + bounds_h means bottom of lane => velocity 0
+        let vel = y_to_velocity(160.0, 100.0, 60.0);
+        assert_eq!(vel, 0);
+    }
+
+    #[test]
+    fn y_to_velocity_at_midpoint_returns_half() {
+        // Midpoint of lane => ~64 (127 * 0.5 = 63.5, rounded = 64)
+        let vel = y_to_velocity(130.0, 100.0, 60.0);
+        assert_eq!(vel, 64);
+    }
+
+    #[test]
+    fn y_to_velocity_clamps_above_top() {
+        // y above bounds_y should clamp to 127
+        let vel = y_to_velocity(50.0, 100.0, 60.0);
+        assert_eq!(vel, 127);
+    }
+
+    #[test]
+    fn y_to_velocity_clamps_below_bottom() {
+        // y below bottom of lane should clamp to 0
+        let vel = y_to_velocity(200.0, 100.0, 60.0);
+        assert_eq!(vel, 0);
+    }
+
+    #[test]
+    fn velocity_to_height_max_returns_full_height() {
+        let h = velocity_to_height(127, 60.0);
+        assert!((h - 60.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn velocity_to_height_zero_returns_zero() {
+        let h = velocity_to_height(0, 60.0);
+        assert!((h - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn velocity_to_height_proportional() {
+        // velocity 64 out of 127 => ~50.4% of height
+        let h = velocity_to_height(64, 100.0);
+        let expected = (64.0 / 127.0) * 100.0;
+        assert!((h - expected).abs() < 0.01);
+    }
+
+    #[test]
+    fn velocity_conversion_roundtrip() {
+        // Convert velocity -> height -> back to velocity via y position
+        let bounds_y = 50.0;
+        let bounds_h = 80.0;
+        for vel in [0u8, 1, 32, 64, 100, 126, 127] {
+            let bar_h = velocity_to_height(vel, bounds_h);
+            // Bar starts at bottom - bar_h, so y = bounds_y + bounds_h - bar_h
+            let y = bounds_y + bounds_h - bar_h;
+            let recovered = y_to_velocity(y, bounds_y, bounds_h);
+            assert_eq!(recovered, vel, "Roundtrip failed for velocity {vel}");
+        }
     }
 }

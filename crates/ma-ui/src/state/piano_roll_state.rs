@@ -138,3 +138,48 @@ impl PianoRollState {
         rows.min(128) as u8
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn piano_roll_tool_default_is_draw() {
+        assert_eq!(PianoRollTool::default(), PianoRollTool::Draw);
+    }
+
+    #[test]
+    fn piano_roll_interaction_default_is_idle() {
+        assert!(matches!(
+            PianoRollInteraction::default(),
+            PianoRollInteraction::Idle
+        ));
+    }
+
+    #[test]
+    fn piano_roll_state_default_tool_is_draw() {
+        let state = PianoRollState::default();
+        assert_eq!(state.tool, PianoRollTool::Draw);
+    }
+
+    #[test]
+    fn piano_roll_state_default_values() {
+        let state = PianoRollState::default();
+        assert_eq!(state.active_clip_id, None);
+        assert_eq!(state.default_velocity, 100);
+        assert_eq!(state.quantize, QuantizeGrid::Sixteenth);
+        assert!(state.selected_notes.is_empty());
+        assert_eq!(state.next_note_id, 1);
+        assert!(matches!(state.interaction, PianoRollInteraction::Idle));
+    }
+
+    #[test]
+    fn alloc_note_id_increments() {
+        let mut state = PianoRollState::default();
+        let id1 = state.alloc_note_id();
+        let id2 = state.alloc_note_id();
+        assert_eq!(id1, NoteId(1));
+        assert_eq!(id2, NoteId(2));
+        assert_eq!(state.next_note_id, 3);
+    }
+}
