@@ -13,5 +13,6 @@ pub mod engine_bridge;
 pub mod file_loader;
 pub mod state;
 pub mod types;
+pub mod undo_actions;
 pub mod views;
 pub mod widgets;

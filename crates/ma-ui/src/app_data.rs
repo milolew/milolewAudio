@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use ma_core::undo::UndoManager;
+
+use crate::undo_actions;
+
 use vizia::prelude::*;
 
 use ma_audio_engine::device_manager::AudioDeviceManager;
@@ -30,6 +34,9 @@ use crate::state::transport_state::TransportState;
 use crate::types::midi::{Note, NoteId};
 use crate::types::time::{QuantizeGrid, Tick, PPQN};
 use crate::types::track::{ClipId, ClipState, TrackId, TrackKind, TrackState};
+
+/// Maximum number of undo actions to keep in history.
+const UNDO_MAX_DEPTH: usize = 100;
 
 /// Which main view is currently active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Data)]
@@ -78,6 +85,10 @@ pub struct AppData {
     /// Audio data references — keeps Arc<[f32]> alive so the engine can read them.
     #[lens(ignore)]
     audio_data: HashMap<ClipId, Arc<[f32]>>,
+
+    /// Undo/redo history manager.
+    #[lens(ignore)]
+    undo_manager: UndoManager<Self>,
 }
 
 /// Engine connection mode.
@@ -172,6 +183,10 @@ pub enum AppEvent {
         sample_rate: u32,
         bit_depth: ExportBitDepth,
     },
+
+    // -- Undo/Redo --
+    Undo,
+    Redo,
 
     // -- Browser --
     BrowserRefresh,
@@ -393,6 +408,7 @@ impl AppData {
             response_buf: Vec::with_capacity(64),
             audio_peaks: HashMap::new(),
             audio_data: HashMap::new(),
+            undo_manager: UndoManager::new(UNDO_MAX_DEPTH),
         }
     }
 
@@ -413,7 +429,17 @@ impl AppData {
             .collect()
     }
 
-    fn update_clip(&mut self, updated: ClipState) {
+    /// Whether there is an action available to undo.
+    pub fn can_undo(&self) -> bool {
+        self.undo_manager.can_undo()
+    }
+
+    /// Whether there is an action available to redo.
+    pub fn can_redo(&self) -> bool {
+        self.undo_manager.can_redo()
+    }
+
+    pub(crate) fn update_clip(&mut self, updated: ClipState) {
         if let Some(clip) = self.clips.iter_mut().find(|c| c.id == updated.id) {
             *clip = updated;
         }
@@ -435,7 +461,7 @@ impl AppData {
     }
 
     /// Send a UI command to whichever engine is active.
-    fn send_command(&mut self, cmd: EngineCommand) {
+    pub(crate) fn send_command(&mut self, cmd: EngineCommand) {
         let sent = match &mut self.engine {
             EngineMode::Real { bridge, .. } => Self::translate_command(&cmd)
                 .map(|core_cmd| bridge.send_command(core_cmd))
@@ -751,6 +777,7 @@ impl AppData {
         self.clips.clear();
         self.audio_peaks.clear();
         self.audio_data.clear();
+        self.undo_manager.clear();
         self.transport.tempo = project.tempo;
 
         let mut next_note_id = 1000u64;
@@ -1026,16 +1053,26 @@ impl AppData {
                     let new_clip = clip.with_note_added(note);
                     self.update_clip(new_clip);
                     self.send_command(EngineCommand::AddNote { clip_id, note });
+                    self.undo_manager
+                        .push(Box::new(undo_actions::AddNoteAction { clip_id, note }));
                 }
             }
             AppEvent::RemoveNote(note_id) => {
                 if let Some(clip) = self.clips.iter().find(|c| c.id == clip_id) {
-                    let new_clip = clip.with_note_removed(*note_id);
-                    self.update_clip(new_clip);
-                    self.send_command(EngineCommand::RemoveNote {
-                        clip_id,
-                        note_id: *note_id,
-                    });
+                    if let Some(note) = clip.notes.iter().find(|n| n.id == *note_id) {
+                        let saved_note = *note;
+                        let new_clip = clip.with_note_removed(*note_id);
+                        self.update_clip(new_clip);
+                        self.send_command(EngineCommand::RemoveNote {
+                            clip_id,
+                            note_id: *note_id,
+                        });
+                        self.undo_manager
+                            .push(Box::new(undo_actions::RemoveNoteAction {
+                                clip_id,
+                                note: saved_note,
+                            }));
+                    }
                 }
             }
             AppEvent::MoveNote {
@@ -1045,6 +1082,8 @@ impl AppData {
             } => {
                 if let Some(clip) = self.clips.iter().find(|c| c.id == clip_id) {
                     if let Some(note) = clip.notes.iter().find(|n| n.id == *note_id) {
+                        let old_start = note.start_tick;
+                        let old_pitch = note.pitch;
                         let updated = Note {
                             start_tick: *new_start,
                             pitch: *new_pitch,
@@ -1058,6 +1097,15 @@ impl AppData {
                             new_start: *new_start,
                             new_pitch: *new_pitch,
                         });
+                        self.undo_manager
+                            .push(Box::new(undo_actions::MoveNoteAction {
+                                clip_id,
+                                note_id: *note_id,
+                                old_start,
+                                old_pitch,
+                                new_start: *new_start,
+                                new_pitch: *new_pitch,
+                            }));
                     }
                 }
             }
@@ -1067,6 +1115,7 @@ impl AppData {
             } => {
                 if let Some(clip) = self.clips.iter().find(|c| c.id == clip_id) {
                     if let Some(note) = clip.notes.iter().find(|n| n.id == *note_id) {
+                        let old_duration = note.duration_ticks;
                         let updated = Note {
                             duration_ticks: *new_duration,
                             ..*note
@@ -1078,6 +1127,13 @@ impl AppData {
                             note_id: *note_id,
                             new_duration: *new_duration,
                         });
+                        self.undo_manager
+                            .push(Box::new(undo_actions::ResizeNoteAction {
+                                clip_id,
+                                note_id: *note_id,
+                                old_duration,
+                                new_duration: *new_duration,
+                            }));
                     }
                 }
             }
@@ -1196,13 +1252,26 @@ impl Model for AppData {
 
             // Mixer: track parameters
             AppEvent::SetTrackVolume { track_id, volume } => {
-                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
-                    track.volume = *volume;
-                }
+                let old_volume =
+                    if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
+                        let old = track.volume;
+                        track.volume = *volume;
+                        Some(old)
+                    } else {
+                        None
+                    };
                 self.send_command(EngineCommand::SetTrackVolume {
                     track_id: *track_id,
                     volume: *volume,
                 });
+                if let Some(old_vol) = old_volume {
+                    self.undo_manager
+                        .push(Box::new(undo_actions::SetTrackVolumeAction {
+                            track_id: *track_id,
+                            old_volume: old_vol,
+                            new_volume: *volume,
+                        }));
+                }
             }
             AppEvent::SetTrackPan { track_id, pan } => {
                 if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
@@ -1331,6 +1400,20 @@ impl Model for AppData {
                 self.browser.filter = *filter;
                 self.browser.refresh();
             }
+            // -- Undo/Redo --
+            AppEvent::Undo => {
+                let mut um =
+                    std::mem::replace(&mut self.undo_manager, UndoManager::new(UNDO_MAX_DEPTH));
+                um.undo(self);
+                self.undo_manager = um;
+            }
+            AppEvent::Redo => {
+                let mut um =
+                    std::mem::replace(&mut self.undo_manager, UndoManager::new(UNDO_MAX_DEPTH));
+                um.redo(self);
+                self.undo_manager = um;
+            }
+
             AppEvent::ToggleBrowser => {
                 self.browser.visible = !self.browser.visible;
                 if self.browser.visible {

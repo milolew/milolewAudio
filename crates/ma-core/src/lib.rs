@@ -16,6 +16,7 @@ pub mod midi_clip;
 pub mod parameters;
 pub mod project_file;
 pub mod time;
+pub mod undo;
 
 pub use audio_buffer::{AudioBuffer, BufferError};
 pub use commands::{EngineCommand, TopologyCommand};
@@ -27,3 +28,4 @@ pub use parameters::{
     TransportState, Velocity,
 };
 pub use time::{FrameCount, SamplePos, Tick, TimeError, PPQN};
+pub use undo::{UndoAction, UndoManager};
