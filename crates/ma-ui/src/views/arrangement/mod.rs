@@ -15,6 +15,7 @@
 
 pub mod clip_interaction;
 mod clip_renderer;
+pub mod clipboard;
 mod grid;
 mod live_waveform;
 mod playhead;

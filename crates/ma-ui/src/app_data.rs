@@ -31,6 +31,7 @@ use crate::types::midi::{Note, NoteId};
 use crate::types::time::{QuantizeGrid, Tick, PPQN};
 use crate::types::track::{ClipId, ClipState, TrackId, TrackKind, TrackState};
 use crate::views::arrangement::clip_interaction::ClipInteraction;
+use crate::views::arrangement::clipboard::ClipClipboard;
 use crate::views::arrangement::snap::SnapGrid;
 
 /// Which main view is currently active.
@@ -1603,8 +1604,70 @@ impl AppData {
                 self.clips.retain(|c| !selected.contains(&c.id));
                 self.arrangement.selected_clips = ClipSelection::default();
             }
-            // Stub handlers for copy/paste (next commit)
-            AppEvent::CopySelectedClips | AppEvent::PasteClips => {}
+            AppEvent::CopySelectedClips => {
+                let selected_clips: Vec<ClipState> = self
+                    .clips
+                    .iter()
+                    .filter(|c| self.arrangement.selected_clips.contains(&c.id))
+                    .cloned()
+                    .collect();
+                let track_map: Vec<(TrackId, usize)> = self
+                    .tracks
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| (t.id, i))
+                    .collect();
+                self.arrangement.clipboard = ClipClipboard::from_clips(&selected_clips, &track_map);
+            }
+            AppEvent::PasteClips => {
+                if self.arrangement.clipboard.is_empty() {
+                    return;
+                }
+                let playhead = self.transport.position;
+                let entries = self.arrangement.clipboard.entries.clone();
+                let mut new_ids = Vec::new();
+
+                // Determine base track index from selected track
+                let base_track_idx = self
+                    .arrangement
+                    .selected_track
+                    .and_then(|tid| self.tracks.iter().position(|t| t.id == tid))
+                    .unwrap_or(0) as i32;
+
+                for entry in &entries {
+                    let target_idx = (base_track_idx + entry.track_index_offset)
+                        .clamp(0, self.tracks.len() as i32 - 1)
+                        as usize;
+                    let target_track_id = self.tracks[target_idx].id;
+
+                    let new_id = ClipId::new();
+                    let mut new_clip = entry.clip.clone();
+                    new_clip.id = new_id;
+                    new_clip.track_id = target_track_id;
+                    new_clip.start_tick = playhead + entry.tick_offset;
+
+                    // New note IDs for MIDI clips
+                    for note in &mut new_clip.notes {
+                        note.id = self.piano_roll.alloc_note_id();
+                    }
+
+                    // Share audio data
+                    if let Some(peaks) = self.audio_peaks.get(&entry.clip.id).cloned() {
+                        self.audio_peaks.insert(new_id, peaks);
+                    }
+                    if let Some(data) = self.audio_data.get(&entry.clip.id).cloned() {
+                        self.audio_data.insert(new_id, data);
+                    }
+
+                    new_ids.push(new_id);
+                    self.clips.push(new_clip);
+                    self.install_clip_in_engine(new_id);
+                }
+
+                self.arrangement.selected_clips = ClipSelection {
+                    clips: new_ids.into_iter().collect(),
+                };
+            }
             _ => {}
         }
     }

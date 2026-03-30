@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use crate::types::track::{ClipId, TrackId};
 use crate::views::arrangement::clip_interaction::ClipInteraction;
+use crate::views::arrangement::clipboard::ClipClipboard;
 use crate::views::arrangement::snap::SnapGrid;
 
 /// Immutable clip selection state backed by a HashSet for O(1) contains().
@@ -60,6 +61,8 @@ pub struct ArrangementState {
     pub snap_grid: SnapGrid,
     /// Current mouse interaction state.
     pub interaction: ClipInteraction,
+    /// Clipboard for copy/paste.
+    pub clipboard: ClipClipboard,
 }
 
 impl Default for ArrangementState {
@@ -73,6 +76,7 @@ impl Default for ArrangementState {
             track_height: 80.0,
             snap_grid: SnapGrid::default(),
             interaction: ClipInteraction::default(),
+            clipboard: ClipClipboard::default(),
         }
     }
 }
