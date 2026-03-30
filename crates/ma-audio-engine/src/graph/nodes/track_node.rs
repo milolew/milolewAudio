@@ -200,7 +200,8 @@ impl AudioNode for TrackNode {
         };
 
         let is_armed = self.record_armed.load(Ordering::Relaxed);
-        let is_recording = self.is_recording.load(Ordering::Relaxed);
+        // ORDERING: Acquire — cross-thread state stored with Release by command processor
+        let is_recording = self.is_recording.load(Ordering::Acquire);
         let is_input_track = self.record_producer.is_some();
 
         // Push to recording buffer if armed and recording (pre-fader, pre-monitor)
@@ -215,7 +216,7 @@ impl AudioNode for TrackNode {
         if is_input_track {
             let monitor = self.load_monitor_mode();
             let should_pass_through = match monitor {
-                MonitorMode::Off => is_armed && is_recording,
+                MonitorMode::Off => false,
                 MonitorMode::On => true,
                 MonitorMode::Auto => is_armed && !is_recording,
             };

@@ -185,13 +185,6 @@ pub fn process_commands(
                 }
             }
 
-            // ── Metronome ──
-            EngineCommand::SetMetronomeEnabled(_enabled) => {
-                // Metronome enabled/disabled is handled via atomic in MetronomeNode.
-                // The UI sets the Arc<AtomicBool> directly via EngineHandle.
-                // This command variant exists for the mock engine path.
-            }
-
             // ── Lifecycle ──
             EngineCommand::Shutdown => {
                 shutdown = true;
@@ -510,5 +503,25 @@ mod tests {
             .node_downcast_mut::<MidiPlayerNode>(idx)
             .unwrap();
         assert_eq!(player.clip_count(), 0);
+    }
+
+    #[test]
+    fn set_monitor_mode_command() {
+        let (mut producer, _, mut state) = test_engine();
+        let track_id = state.tracks[0].id;
+        producer
+            .push(EngineCommand::SetMonitorMode {
+                track_id,
+                mode: ma_core::parameters::MonitorMode::Auto,
+            })
+            .unwrap();
+        dispatch(&mut state);
+        // Auto = 2
+        assert_eq!(
+            state.tracks[0]
+                .monitor_mode
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
     }
 }

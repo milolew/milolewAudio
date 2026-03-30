@@ -382,36 +382,34 @@ impl View for TrackHeader {
                 let bounds = cx.bounds();
                 let scale = cx.scale_factor();
 
-                // Extract needed data before emitting (borrow rules)
                 let action = cx.data::<AppData>().and_then(|app| {
                     let track = app.tracks.get(self.track_index)?;
                     let tid = track.id;
                     if Self::is_in_arm_button(bounds, cursor_x, cursor_y, scale) {
-                        Some(('a', tid)) // arm
+                        Some(HeaderAction::Arm(tid))
                     } else if Self::is_in_delete_button(bounds, cursor_x, cursor_y, scale) {
-                        Some(('d', tid)) // delete
-                    } else if Self::is_in_monitor_button(bounds, cursor_x, cursor_y, scale) {
-                        Some(('m', tid)) // monitor mode cycle
+                        Some(HeaderAction::Delete(tid))
+                    } else if track.kind == TrackKind::Audio
+                        && Self::is_in_monitor_button(bounds, cursor_x, cursor_y, scale)
+                    {
+                        Some(HeaderAction::Monitor(tid))
+                    } else if app.arrangement.editing_track.is_some() {
+                        Some(HeaderAction::FinishEdit(tid))
                     } else {
-                        let editing = app.arrangement.editing_track.is_some();
-                        if editing {
-                            Some(('f', tid))
-                        } else {
-                            Some(('s', tid))
-                        }
+                        Some(HeaderAction::Select(tid))
                     }
                 });
 
-                if let Some((action_type, tid)) = action {
-                    match action_type {
-                        'a' => cx.emit(AppEvent::ToggleRecordArm(tid)),
-                        'd' => cx.emit(AppEvent::RemoveTrack(tid)),
-                        'm' => cx.emit(AppEvent::CycleMonitorMode(tid)),
-                        'f' => {
+                if let Some(action) = action {
+                    match action {
+                        HeaderAction::Arm(tid) => cx.emit(AppEvent::ToggleRecordArm(tid)),
+                        HeaderAction::Delete(tid) => cx.emit(AppEvent::RemoveTrack(tid)),
+                        HeaderAction::Monitor(tid) => cx.emit(AppEvent::CycleMonitorMode(tid)),
+                        HeaderAction::FinishEdit(tid) => {
                             cx.emit(AppEvent::FinishRenameTrack);
                             cx.emit(AppEvent::SelectTrack(tid));
                         }
-                        _ => cx.emit(AppEvent::SelectTrack(tid)),
+                        HeaderAction::Select(tid) => cx.emit(AppEvent::SelectTrack(tid)),
                     }
                 }
                 cx.focus();
@@ -427,6 +425,7 @@ impl View for TrackHeader {
                     let track = app.tracks.get(self.track_index)?;
                     if !Self::is_in_arm_button(bounds, cursor_x, cursor_y, scale)
                         && !Self::is_in_delete_button(bounds, cursor_x, cursor_y, scale)
+                        && !Self::is_in_monitor_button(bounds, cursor_x, cursor_y, scale)
                     {
                         Some(track.id)
                     } else {
@@ -478,9 +477,11 @@ impl View for TrackHeader {
 
                 if is_editing && !ch.is_control() {
                     if let Some(app) = cx.data::<AppData>() {
-                        let mut name = app.arrangement.editing_name.clone();
-                        name.push(*ch);
-                        cx.emit(AppEvent::RenameTrackInput(name));
+                        if app.arrangement.editing_name.len() < 64 {
+                            let mut name = app.arrangement.editing_name.clone();
+                            name.push(*ch);
+                            cx.emit(AppEvent::RenameTrackInput(name));
+                        }
                     }
                     meta.consume();
                 }
@@ -488,6 +489,15 @@ impl View for TrackHeader {
             _ => {}
         });
     }
+}
+
+/// Actions dispatched from TrackHeader click handling.
+enum HeaderAction {
+    Arm(crate::types::track::TrackId),
+    Delete(crate::types::track::TrackId),
+    Monitor(crate::types::track::TrackId),
+    FinishEdit(crate::types::track::TrackId),
+    Select(crate::types::track::TrackId),
 }
 
 // ---------------------------------------------------------------------------

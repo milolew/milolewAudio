@@ -109,8 +109,11 @@ impl AudioNode for MetronomeNode {
 
         let sample_rate = context.sample_rate;
         let tempo = context.tempo;
+        if sample_rate <= 0.0 || tempo <= 0.0 {
+            return;
+        }
         let frames = context.buffer_size as usize;
-        let click_duration_samples = (CLICK_DURATION_SECS * sample_rate as f64) as u32;
+        let click_duration_samples = ((CLICK_DURATION_SECS * sample_rate as f64) as u32).max(1);
 
         for frame in 0..frames {
             let current_sample = context.playhead_samples + frame as i64;

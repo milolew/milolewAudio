@@ -177,10 +177,6 @@ pub enum AppEvent {
     // -- Track management --
     AddTrack(TrackKind),
     RemoveTrack(TrackId),
-    RenameTrack {
-        track_id: TrackId,
-        name: String,
-    },
     StartRenameTrack(TrackId),
     FinishRenameTrack,
     CancelRenameTrack,
@@ -1082,6 +1078,12 @@ impl AppData {
     }
 
     fn remove_track(&mut self, track_id: TrackId) {
+        // Clear inline rename if this track was being edited
+        if self.arrangement.editing_track == Some(track_id) {
+            self.arrangement.editing_track = None;
+            self.arrangement.editing_name.clear();
+        }
+
         // Remove associated clips
         self.clips.retain(|c| c.track_id != track_id);
         // Remove audio data and peak caches for removed clips
@@ -1388,11 +1390,6 @@ impl Model for AppData {
             }
             AppEvent::RemoveTrack(track_id) => {
                 self.remove_track(*track_id);
-            }
-            AppEvent::RenameTrack { track_id, name } => {
-                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
-                    track.name = name.clone();
-                }
             }
             AppEvent::StartRenameTrack(track_id) => {
                 if let Some(track) = self.tracks.iter().find(|t| t.id == *track_id) {
