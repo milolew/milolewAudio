@@ -3,12 +3,12 @@
 //! Owns all state and the engine bridge. Handles all events from views/widgets
 //! and routes commands to the audio engine via lock-free ring buffers.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ma_core::undo::UndoManager;
+use ma_core::undo::{UndoAction, UndoManager};
 
 use crate::undo_actions;
 
@@ -29,7 +29,7 @@ use crate::engine_bridge::responses::EngineResponse;
 use crate::state::arrangement_state::{ArrangementState, ClipSelection};
 use crate::state::browser_state::{BrowserFilter, BrowserState};
 use crate::state::mixer_state::MixerState;
-use crate::state::piano_roll_state::PianoRollState;
+use crate::state::piano_roll_state::{PianoRollState, PianoRollTool};
 use crate::state::transport_state::TransportState;
 use crate::types::midi::{Note, NoteId};
 use crate::types::time::{QuantizeGrid, Tick, PPQN};
@@ -123,9 +123,12 @@ pub enum AppEvent {
     Stop,
     Record,
     Pause,
+    TogglePlayPause,
     SetTempo(f64),
     SetPosition(Tick),
     ToggleLoop,
+    ToggleMetronome,
+    ToggleFollowPlayhead,
 
     // -- View switching --
     SwitchView(ActiveView),
@@ -150,6 +153,24 @@ pub enum AppEvent {
     ScrollArrangementX(f64),
     ScrollArrangementY(f32),
     ZoomArrangement(f64),
+
+    // -- Piano roll editing --
+    TransposeSelectedNotes {
+        semitones: i8,
+    },
+    QuantizeSelectedNotes,
+    SelectAllNotes,
+    DeleteSelectedNotes,
+    SetPianoRollTool(PianoRollTool),
+    SetNoteVelocity {
+        note_id: NoteId,
+        velocity: u8,
+    },
+    FinishVelocityDrag {
+        note_id: NoteId,
+        original_velocity: u8,
+        new_velocity: u8,
+    },
 
     // -- Piano roll --
     AddNote(Note),
@@ -187,6 +208,9 @@ pub enum AppEvent {
         bit_depth: ExportBitDepth,
     },
 
+    // -- Project shortcut --
+    SaveCurrentProject,
+
     // -- Undo/Redo --
     Undo,
     Redo,
@@ -217,6 +241,13 @@ pub enum AppEvent {
     CopySelectedClips,
     PasteClips,
     SetSnapGrid(SnapGrid),
+
+    // -- Track management --
+    AddAudioTrack,
+    AddMidiTrack,
+
+    // -- Selection --
+    SelectAllClips,
 }
 
 /// Create a deterministic UUID for demo data (stable across restarts).
@@ -1052,8 +1083,21 @@ impl AppData {
             AppEvent::SetPosition(tick) => {
                 self.send_command(EngineCommand::SetPosition(*tick));
             }
+            AppEvent::TogglePlayPause => {
+                if self.transport.is_playing {
+                    self.send_command(EngineCommand::Pause);
+                } else {
+                    self.send_command(EngineCommand::Play);
+                }
+            }
             AppEvent::ToggleLoop => {
                 self.transport.loop_enabled = !self.transport.loop_enabled;
+            }
+            AppEvent::ToggleMetronome => {
+                self.transport.metronome_enabled = !self.transport.metronome_enabled;
+            }
+            AppEvent::ToggleFollowPlayhead => {
+                self.transport.follow_playhead = !self.transport.follow_playhead;
             }
             _ => {}
         }
@@ -1182,6 +1226,130 @@ impl AppData {
             _ => {}
         }
     }
+
+    fn handle_transpose_selected(&mut self, semitones: i8) {
+        let clip_id = match self.piano_roll.active_clip_id {
+            Some(id) => id,
+            None => return,
+        };
+        let selected = &self.piano_roll.selected_notes;
+        if selected.is_empty() {
+            return;
+        }
+        let clip = match self.clips.iter().find(|c| c.id == clip_id) {
+            Some(c) => c,
+            None => return,
+        };
+        let original_pitches: Vec<(NoteId, u8)> = clip
+            .notes
+            .iter()
+            .filter(|n| selected.contains(&n.id))
+            .map(|n| (n.id, n.pitch))
+            .collect();
+        if original_pitches.is_empty() {
+            return;
+        }
+        let action = undo_actions::TransposeNotesAction {
+            clip_id,
+            original_pitches,
+            semitones,
+        };
+        action.apply(self);
+        self.undo_manager.push(Box::new(action));
+    }
+
+    fn handle_quantize_selected(&mut self) {
+        let clip_id = match self.piano_roll.active_clip_id {
+            Some(id) => id,
+            None => return,
+        };
+        let grid = self.piano_roll.quantize;
+        if grid == QuantizeGrid::Off {
+            return;
+        }
+        let selected = &self.piano_roll.selected_notes;
+        if selected.is_empty() {
+            return;
+        }
+        let clip = match self.clips.iter().find(|c| c.id == clip_id) {
+            Some(c) => c,
+            None => return,
+        };
+        let original_starts: Vec<(NoteId, Tick)> = clip
+            .notes
+            .iter()
+            .filter(|n| selected.contains(&n.id))
+            .map(|n| (n.id, n.start_tick))
+            .collect();
+        if original_starts.is_empty() {
+            return;
+        }
+        let action = undo_actions::QuantizeNotesAction {
+            clip_id,
+            original_starts,
+            quantize_grid: grid,
+        };
+        action.apply(self);
+        self.undo_manager.push(Box::new(action));
+    }
+
+    fn handle_delete_selected_notes(&mut self) {
+        let clip_id = match self.piano_roll.active_clip_id {
+            Some(id) => id,
+            None => return,
+        };
+        let selected: Vec<NoteId> = self.piano_roll.selected_notes.drain(..).collect();
+        if selected.is_empty() {
+            return;
+        }
+        let clip = match self.clips.iter().find(|c| c.id == clip_id) {
+            Some(c) => c,
+            None => return,
+        };
+        let notes: Vec<Note> = clip
+            .notes
+            .iter()
+            .filter(|n| selected.contains(&n.id))
+            .copied()
+            .collect();
+        if notes.is_empty() {
+            return;
+        }
+        let action = undo_actions::RemoveNotesAction { clip_id, notes };
+        action.apply(self);
+        self.undo_manager.push(Box::new(action));
+    }
+
+    fn handle_add_track(&mut self, kind: TrackKind) {
+        let track_id = TrackId(uuid::Uuid::new_v4());
+        let (name, color) = match kind {
+            TrackKind::Audio => ("Audio", [80, 220, 120]),
+            TrackKind::Midi => ("MIDI", [100, 160, 255]),
+        };
+        let track = match kind {
+            TrackKind::Audio => TrackState::new_audio(track_id, name, color),
+            TrackKind::Midi => TrackState::new_midi(track_id, name, color),
+        };
+        let action = undo_actions::AddTrackAction {
+            track: track.clone(),
+        };
+        action.apply(self);
+        self.undo_manager.push(Box::new(action));
+    }
+
+    fn handle_set_note_velocity(&mut self, note_id: NoteId, velocity: u8) {
+        let clip_id = match self.piano_roll.active_clip_id {
+            Some(id) => id,
+            None => return,
+        };
+        if let Some(clip) = self.clips.iter().find(|c| c.id == clip_id) {
+            let mut updated_clip = clip.clone();
+            if let Some(note) = updated_clip.notes.iter_mut().find(|n| n.id == note_id) {
+                note.velocity = velocity;
+            }
+            self.update_clip(updated_clip);
+        }
+    }
 }
 
 impl Model for AppData {
@@ -1207,9 +1375,12 @@ impl Model for AppData {
             | AppEvent::Stop
             | AppEvent::Record
             | AppEvent::Pause
+            | AppEvent::TogglePlayPause
             | AppEvent::SetTempo(_)
             | AppEvent::SetPosition(_)
-            | AppEvent::ToggleLoop => {
+            | AppEvent::ToggleLoop
+            | AppEvent::ToggleMetronome
+            | AppEvent::ToggleFollowPlayhead => {
                 self.dispatch_transport(app_event);
             }
 
@@ -1458,6 +1629,71 @@ impl Model for AppData {
             | AppEvent::PasteClips
             | AppEvent::SetSnapGrid(_) => {
                 self.dispatch_clip_operations(app_event);
+            }
+
+            // -- Piano roll editing shortcuts --
+            AppEvent::TransposeSelectedNotes { semitones } => {
+                self.handle_transpose_selected(*semitones);
+            }
+            AppEvent::QuantizeSelectedNotes => {
+                self.handle_quantize_selected();
+            }
+            AppEvent::SelectAllNotes => {
+                if let Some(clip_id) = self.piano_roll.active_clip_id {
+                    if let Some(clip) = self.clips.iter().find(|c| c.id == clip_id) {
+                        self.piano_roll.selected_notes = clip.notes.iter().map(|n| n.id).collect();
+                    }
+                }
+            }
+            AppEvent::DeleteSelectedNotes => {
+                self.handle_delete_selected_notes();
+            }
+            AppEvent::SetPianoRollTool(tool) => {
+                self.piano_roll.tool = *tool;
+            }
+            AppEvent::SetNoteVelocity { note_id, velocity } => {
+                self.handle_set_note_velocity(*note_id, *velocity);
+            }
+            AppEvent::FinishVelocityDrag {
+                note_id,
+                original_velocity,
+                new_velocity,
+            } => {
+                if original_velocity != new_velocity {
+                    let clip_id = match self.piano_roll.active_clip_id {
+                        Some(id) => id,
+                        None => return,
+                    };
+                    self.undo_manager
+                        .push(Box::new(undo_actions::SetNoteVelocityAction {
+                            clip_id,
+                            note_id: *note_id,
+                            old_velocity: *original_velocity,
+                            new_velocity: *new_velocity,
+                        }));
+                }
+            }
+
+            // -- Project shortcut --
+            AppEvent::SaveCurrentProject => {
+                let path = PathBuf::from("project.mla");
+                if let Err(e) = self.save_project_to(&path) {
+                    log::error!("Failed to save project: {e}");
+                }
+            }
+
+            // -- Track management --
+            AppEvent::AddAudioTrack => {
+                self.handle_add_track(TrackKind::Audio);
+            }
+            AppEvent::AddMidiTrack => {
+                self.handle_add_track(TrackKind::Midi);
+            }
+
+            // -- Selection --
+            AppEvent::SelectAllClips => {
+                let all_ids: HashSet<ClipId> = self.clips.iter().map(|c| c.id).collect();
+                self.arrangement.selected_clips = ClipSelection { clips: all_ids };
             }
         });
     }

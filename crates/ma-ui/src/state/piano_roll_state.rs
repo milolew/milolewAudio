@@ -4,6 +4,15 @@ use crate::types::midi::NoteId;
 use crate::types::time::{QuantizeGrid, Tick};
 use crate::types::track::ClipId;
 
+/// Active editing tool in the piano roll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PianoRollTool {
+    #[default]
+    Draw,
+    Erase,
+    Velocity,
+}
+
 /// Which edge of a note is being resized.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResizeEdge {
@@ -40,6 +49,10 @@ pub enum PianoRollInteraction {
         current_x: f32,
         current_y: f32,
     },
+    VelocityDrag {
+        note_id: NoteId,
+        original_velocity: u8,
+    },
 }
 
 /// Full piano roll state.
@@ -65,6 +78,8 @@ pub struct PianoRollState {
     pub selected_notes: Vec<NoteId>,
     /// Next note ID counter.
     pub next_note_id: u64,
+    /// Active editing tool.
+    pub tool: PianoRollTool,
 }
 
 impl Default for PianoRollState {
@@ -80,6 +95,7 @@ impl Default for PianoRollState {
             default_velocity: 100,
             selected_notes: Vec::new(),
             next_note_id: 1,
+            tool: PianoRollTool::Draw,
         }
     }
 }
@@ -120,5 +136,50 @@ impl PianoRollState {
     pub fn visible_rows(&self, height: f32) -> u8 {
         let rows = (height / self.note_height).ceil() as u32;
         rows.min(128) as u8
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn piano_roll_tool_default_is_draw() {
+        assert_eq!(PianoRollTool::default(), PianoRollTool::Draw);
+    }
+
+    #[test]
+    fn piano_roll_interaction_default_is_idle() {
+        assert!(matches!(
+            PianoRollInteraction::default(),
+            PianoRollInteraction::Idle
+        ));
+    }
+
+    #[test]
+    fn piano_roll_state_default_tool_is_draw() {
+        let state = PianoRollState::default();
+        assert_eq!(state.tool, PianoRollTool::Draw);
+    }
+
+    #[test]
+    fn piano_roll_state_default_values() {
+        let state = PianoRollState::default();
+        assert_eq!(state.active_clip_id, None);
+        assert_eq!(state.default_velocity, 100);
+        assert_eq!(state.quantize, QuantizeGrid::Sixteenth);
+        assert!(state.selected_notes.is_empty());
+        assert_eq!(state.next_note_id, 1);
+        assert!(matches!(state.interaction, PianoRollInteraction::Idle));
+    }
+
+    #[test]
+    fn alloc_note_id_increments() {
+        let mut state = PianoRollState::default();
+        let id1 = state.alloc_note_id();
+        let id2 = state.alloc_note_id();
+        assert_eq!(id1, NoteId(1));
+        assert_eq!(id2, NoteId(2));
+        assert_eq!(state.next_note_id, 3);
     }
 }

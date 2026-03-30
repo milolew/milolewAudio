@@ -209,6 +209,50 @@ impl UndoAction<AppData> for RemoveNoteAction {
 }
 
 // ---------------------------------------------------------------------------
+// 7b. RemoveNotesAction (batch delete)
+// ---------------------------------------------------------------------------
+
+pub struct RemoveNotesAction {
+    pub clip_id: ClipId,
+    pub notes: Vec<Note>,
+}
+
+impl UndoAction<AppData> for RemoveNotesAction {
+    fn description(&self) -> &str {
+        "Delete Selected Notes"
+    }
+
+    fn apply(&self, state: &mut AppData) {
+        if let Some(clip) = state.clips.iter().find(|c| c.id == self.clip_id) {
+            let mut updated = clip.clone();
+            for note in &self.notes {
+                updated.notes.retain(|n| n.id != note.id);
+                state.send_command(EngineCommand::RemoveNote {
+                    clip_id: self.clip_id,
+                    note_id: note.id,
+                });
+            }
+            state.update_clip(updated);
+        }
+    }
+
+    fn revert(&self, state: &mut AppData) {
+        if let Some(clip) = state.clips.iter().find(|c| c.id == self.clip_id) {
+            let mut updated = clip.clone();
+            for note in &self.notes {
+                updated.notes.push(*note);
+                state.send_command(EngineCommand::AddNote {
+                    clip_id: self.clip_id,
+                    note: *note,
+                });
+            }
+            updated.notes.sort_by_key(|n| n.start_tick);
+            state.update_clip(updated);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 8. MoveNoteAction
 // ---------------------------------------------------------------------------
 
@@ -522,6 +566,43 @@ impl UndoAction<AppData> for QuantizeNotesAction {
                 }
             }
             updated_clip.notes.sort_by_key(|n| n.start_tick);
+            state.update_clip(updated_clip);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 16. SetNoteVelocityAction
+// ---------------------------------------------------------------------------
+
+pub struct SetNoteVelocityAction {
+    pub clip_id: ClipId,
+    pub note_id: NoteId,
+    pub old_velocity: u8,
+    pub new_velocity: u8,
+}
+
+impl UndoAction<AppData> for SetNoteVelocityAction {
+    fn description(&self) -> &str {
+        "Set Note Velocity"
+    }
+
+    fn apply(&self, state: &mut AppData) {
+        if let Some(clip) = state.clips.iter().find(|c| c.id == self.clip_id) {
+            let mut updated_clip = clip.clone();
+            if let Some(note) = updated_clip.notes.iter_mut().find(|n| n.id == self.note_id) {
+                note.velocity = self.new_velocity;
+            }
+            state.update_clip(updated_clip);
+        }
+    }
+
+    fn revert(&self, state: &mut AppData) {
+        if let Some(clip) = state.clips.iter().find(|c| c.id == self.clip_id) {
+            let mut updated_clip = clip.clone();
+            if let Some(note) = updated_clip.notes.iter_mut().find(|n| n.id == self.note_id) {
+                note.velocity = self.old_velocity;
+            }
             state.update_clip(updated_clip);
         }
     }
@@ -1166,6 +1247,170 @@ mod tests {
                 !action.description().is_empty(),
                 "Action description should not be empty"
             );
+        }
+    }
+
+    // -- SetNoteVelocityAction --
+
+    #[test]
+    fn set_note_velocity_apply_and_revert() {
+        let mut state = AppData::new();
+        let cid = clip_id(1);
+        // Demo note NoteId(100) in clip 1 has velocity 100
+        let note_id = NoteId(100);
+        let original_velocity = state
+            .clip(cid)
+            .unwrap()
+            .notes
+            .iter()
+            .find(|n| n.id == note_id)
+            .unwrap()
+            .velocity;
+        assert_eq!(original_velocity, 100);
+
+        let action = SetNoteVelocityAction {
+            clip_id: cid,
+            note_id,
+            old_velocity: 100,
+            new_velocity: 50,
+        };
+
+        action.apply(&mut state);
+        let note = state
+            .clip(cid)
+            .unwrap()
+            .notes
+            .iter()
+            .find(|n| n.id == note_id)
+            .unwrap();
+        assert_eq!(note.velocity, 50);
+
+        action.revert(&mut state);
+        let note = state
+            .clip(cid)
+            .unwrap()
+            .notes
+            .iter()
+            .find(|n| n.id == note_id)
+            .unwrap();
+        assert_eq!(note.velocity, 100);
+    }
+
+    // -- TransposeNotesAction: boundary clamping --
+
+    #[test]
+    fn transpose_notes_clamp_at_upper_boundary() {
+        let mut state = AppData::new();
+        let cid = clip_id(1);
+
+        // Set note to pitch 126 — near upper boundary
+        let note_id = NoteId(100);
+        let clip = state.clip(cid).unwrap().clone();
+        let mut modified = clip.clone();
+        modified.notes[0].pitch = 126;
+        state.update_clip(modified);
+
+        let original_pitches = vec![(note_id, 126u8)];
+
+        let action = TransposeNotesAction {
+            clip_id: cid,
+            original_pitches,
+            semitones: 5,
+        };
+
+        action.apply(&mut state);
+        let note = state
+            .clip(cid)
+            .unwrap()
+            .notes
+            .iter()
+            .find(|n| n.id == note_id)
+            .unwrap();
+        // 126 + 5 = 131 => clamped to 127
+        assert_eq!(note.pitch, 127);
+
+        // Revert must restore exact original (126), not 127-5=122
+        action.revert(&mut state);
+        let note = state
+            .clip(cid)
+            .unwrap()
+            .notes
+            .iter()
+            .find(|n| n.id == note_id)
+            .unwrap();
+        assert_eq!(note.pitch, 126);
+    }
+
+    // -- QuantizeNotesAction: sorting after quantize --
+
+    #[test]
+    fn quantize_notes_sorts_by_start_tick() {
+        let mut state = AppData::new();
+        let cid = clip_id(1);
+
+        // Place notes at non-quantized positions where quantizing will reorder them.
+        // Sixteenth grid = PPQN / 4 = 240 ticks.
+        // Note 0: start_tick = 250 => snaps to 240
+        // Note 1: start_tick = 100 => snaps to 0 (nearest to 0, since 120 is halfway)
+        // Note 2: start_tick = 600 => snaps to 480 (240*2)
+        // Note 3: start_tick = 370 => snaps to 480 (nearest: 240 is 130 away, 480 is 110 away)
+        let clip = state.clip(cid).unwrap().clone();
+        let mut modified = clip.clone();
+        modified.notes[0].start_tick = 250;
+        modified.notes[1].start_tick = 100;
+        modified.notes[2].start_tick = 600;
+        modified.notes[3].start_tick = 370;
+        state.update_clip(modified);
+
+        let original_starts: Vec<(NoteId, Tick)> = state
+            .clip(cid)
+            .unwrap()
+            .notes
+            .iter()
+            .map(|n| (n.id, n.start_tick))
+            .collect();
+
+        let action = QuantizeNotesAction {
+            clip_id: cid,
+            original_starts: original_starts.clone(),
+            quantize_grid: QuantizeGrid::Sixteenth,
+        };
+
+        action.apply(&mut state);
+
+        // Verify notes are sorted by start_tick after quantize
+        let notes = &state.clip(cid).unwrap().notes;
+        for pair in notes.windows(2) {
+            assert!(
+                pair[0].start_tick <= pair[1].start_tick,
+                "Notes not sorted after quantize: {} > {}",
+                pair[0].start_tick,
+                pair[1].start_tick
+            );
+        }
+
+        // Verify actual snap values (Sixteenth = 240 ticks)
+        let find_note =
+            |nid: NoteId| -> i64 { notes.iter().find(|n| n.id == nid).unwrap().start_tick };
+        assert_eq!(find_note(NoteId(100)), QuantizeGrid::Sixteenth.snap(250));
+        assert_eq!(find_note(NoteId(101)), QuantizeGrid::Sixteenth.snap(100));
+        assert_eq!(find_note(NoteId(102)), QuantizeGrid::Sixteenth.snap(600));
+        assert_eq!(find_note(NoteId(103)), QuantizeGrid::Sixteenth.snap(370));
+
+        // Revert and verify original positions restored and still sorted
+        action.revert(&mut state);
+        let notes = &state.clip(cid).unwrap().notes;
+        for pair in notes.windows(2) {
+            assert!(
+                pair[0].start_tick <= pair[1].start_tick,
+                "Notes not sorted after revert: {} > {}",
+                pair[0].start_tick,
+                pair[1].start_tick
+            );
+        }
+        for (nid, orig_start) in &original_starts {
+            let note = notes.iter().find(|n| n.id == *nid).unwrap();
+            assert_eq!(note.start_tick, *orig_start);
         }
     }
 }
