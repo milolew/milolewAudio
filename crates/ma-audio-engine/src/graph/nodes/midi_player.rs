@@ -22,11 +22,16 @@ use ma_core::time;
 
 use crate::graph::node::{AudioNode, ProcessContext};
 
+/// Attack/release time in seconds for the note envelope (eliminates clicks).
+const ENVELOPE_TIME_SECS: f32 = 0.005;
+
 /// State of a single MIDI note in the built-in synthesizer.
 #[derive(Debug, Clone, Copy)]
 struct NoteState {
-    /// Whether this note is currently sounding.
-    active: bool,
+    /// Whether the note gate is open (key held).
+    gate: bool,
+    /// Envelope level in range [0.0, 1.0] — ramps up on NoteOn, down on NoteOff.
+    envelope: f32,
     /// Oscillator phase in range [0.0, 1.0).
     phase: f64,
     /// Amplitude derived from velocity (0.0–1.0).
@@ -36,7 +41,8 @@ struct NoteState {
 impl Default for NoteState {
     fn default() -> Self {
         Self {
-            active: false,
+            gate: false,
+            envelope: 0.0,
             phase: 0.0,
             amplitude: 0.0,
         }
@@ -106,9 +112,9 @@ impl MidiPlayerNode {
         output.clear();
 
         if context.transport_state == TransportState::Stopped {
-            // Clear all active notes on stop
             for note in &mut self.active_notes {
-                note.active = false;
+                note.gate = false;
+                note.envelope = 0.0;
             }
             return;
         }
@@ -148,11 +154,10 @@ impl MidiPlayerNode {
                     MidiMessage::NoteOn { note, velocity, .. } => {
                         let idx = note as usize;
                         if idx < 128 {
-                            // MIDI spec: NoteOn with velocity 0 is equivalent to NoteOff
                             if velocity == 0 {
-                                self.active_notes[idx].active = false;
+                                self.active_notes[idx].gate = false;
                             } else {
-                                self.active_notes[idx].active = true;
+                                self.active_notes[idx].gate = true;
                                 self.active_notes[idx].amplitude = f32::from(velocity) / 127.0;
                             }
                         }
@@ -160,7 +165,7 @@ impl MidiPlayerNode {
                     MidiMessage::NoteOff { note, .. } => {
                         let idx = note as usize;
                         if idx < 128 {
-                            self.active_notes[idx].active = false;
+                            self.active_notes[idx].gate = false;
                         }
                     }
                     _ => {}
@@ -173,11 +178,13 @@ impl MidiPlayerNode {
         // from get_mut() and the double-borrow issue with channel_mut().
         let frames = buffer_size as usize;
         let inv_sr = 1.0 / sample_rate;
+        let envelope_rate = (sample_rate as f32 * ENVELOPE_TIME_SECS).recip();
         let mut temp = [0.0f32; MAX_BUFFER_SIZE];
 
         for note_num in 0..128u8 {
             let state = &mut self.active_notes[note_num as usize];
-            if !state.active {
+            // Skip notes that are fully silent and gate is closed
+            if !state.gate && state.envelope <= 0.0 {
                 continue;
             }
 
@@ -186,7 +193,14 @@ impl MidiPlayerNode {
             let amp = state.amplitude;
 
             for sample in temp.iter_mut().take(frames) {
-                *sample += (state.phase * TAU).sin() as f32 * amp * 0.25;
+                // Ramp envelope toward target (1.0 if gate open, 0.0 if closed)
+                if state.gate {
+                    state.envelope = (state.envelope + envelope_rate).min(1.0);
+                } else {
+                    state.envelope = (state.envelope - envelope_rate).max(0.0);
+                }
+
+                *sample += (state.phase * TAU).sin() as f32 * amp * state.envelope * 0.25;
                 state.phase += phase_inc;
                 if state.phase >= 1.0 {
                     state.phase -= 1.0;
@@ -231,9 +245,7 @@ impl AudioNode for MidiPlayerNode {
     }
 
     fn reset(&mut self) {
-        for note in &mut self.active_notes {
-            *note = NoteState::default();
-        }
+        self.active_notes = [NoteState::default(); 128];
     }
 
     fn node_id(&self) -> NodeId {
@@ -406,8 +418,8 @@ mod tests {
         let mut outputs: Vec<&mut ma_core::AudioBuffer> = vec![&mut buf];
         node.process(&[], &mut outputs, &context);
 
-        // After processing, note 69 should be inactive
-        assert!(!node.active_notes[69].active);
+        // After processing, note 69 gate should be closed
+        assert!(!node.active_notes[69].gate);
     }
 
     #[test]
@@ -434,12 +446,14 @@ mod tests {
         let mut node = MidiPlayerNode::new(NodeId(1), 4);
 
         // Activate a note manually
-        node.active_notes[60].active = true;
+        node.active_notes[60].gate = true;
+        node.active_notes[60].envelope = 1.0;
         node.active_notes[60].amplitude = 1.0;
 
         node.reset();
 
-        assert!(!node.active_notes[60].active);
+        assert!(!node.active_notes[60].gate);
+        assert_eq!(node.active_notes[60].envelope, 0.0);
         assert_eq!(node.active_notes[60].amplitude, 0.0);
     }
 
@@ -482,9 +496,9 @@ mod tests {
         let mut outputs: Vec<&mut ma_core::AudioBuffer> = vec![&mut buf];
         node.process(&[], &mut outputs, &context);
 
-        // Both notes should be active
-        assert!(node.active_notes[60].active);
-        assert!(node.active_notes[64].active);
+        // Both notes should have gate open
+        assert!(node.active_notes[60].gate);
+        assert!(node.active_notes[64].gate);
     }
 
     #[test]
@@ -508,6 +522,6 @@ mod tests {
         let mut outputs: Vec<&mut ma_core::AudioBuffer> = vec![&mut buf];
         node.process(&[], &mut outputs, &context);
 
-        assert!(!node.active_notes[60].active);
+        assert!(!node.active_notes[60].gate);
     }
 }

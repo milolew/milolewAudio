@@ -267,6 +267,29 @@ fn demo_id(n: u64) -> uuid::Uuid {
     uuid::Uuid::from_u64_pair(0, n)
 }
 
+/// Convert UI track states to engine track configs.
+fn tracks_to_engine_config(tracks: &[TrackState]) -> Vec<(TrackId, ma_core::TrackConfig)> {
+    tracks
+        .iter()
+        .map(|t| {
+            (
+                t.id,
+                ma_core::TrackConfig {
+                    name: t.name.clone(),
+                    channel_count: 2,
+                    input_enabled: false,
+                    initial_volume: t.volume,
+                    initial_pan: t.pan,
+                    track_type: match t.kind {
+                        TrackKind::Audio => ma_core::TrackType::Audio,
+                        TrackKind::Midi => ma_core::TrackType::Midi,
+                    },
+                },
+            )
+        })
+        .collect()
+}
+
 impl Default for AppData {
     fn default() -> Self {
         Self::new()
@@ -411,7 +434,7 @@ impl AppData {
         let prefs = load_preferences();
 
         // Try real audio engine, fallback to mock
-        let engine = Self::try_real_engine(&prefs.audio).unwrap_or_else(|e| {
+        let engine = Self::try_real_engine(&prefs.audio, &tracks).unwrap_or_else(|e| {
             log::warn!("Real audio engine unavailable: {e}. Using mock engine.");
             let (bridge, endpoint) = create_bridge();
             let handle = spawn_mock_engine(endpoint, track_ids.clone());
@@ -452,7 +475,7 @@ impl AppData {
                 ),
             };
 
-        Self {
+        let mut app = Self {
             transport: TransportState::default(),
             arrangement: ArrangementState::default(),
             mixer: MixerState::default(),
@@ -474,6 +497,16 @@ impl AppData {
             audio_peaks: HashMap::new(),
             audio_data: HashMap::new(),
             undo_manager: UndoManager::new(UNDO_MAX_DEPTH),
+        };
+        app.install_initial_clips();
+        app
+    }
+
+    /// Send all existing clips to the audio engine at startup.
+    fn install_initial_clips(&mut self) {
+        let clip_ids: Vec<ClipId> = self.clips.iter().map(|c| c.id).collect();
+        for clip_id in clip_ids {
+            self.install_clip_in_engine(clip_id);
         }
     }
 
@@ -511,10 +544,16 @@ impl AppData {
     }
 
     /// Attempt to start real audio engine with the given device config.
-    fn try_real_engine(device_config: &AudioDeviceConfig) -> Result<EngineMode, String> {
+    fn try_real_engine(
+        device_config: &AudioDeviceConfig,
+        tracks: &[TrackState],
+    ) -> Result<EngineMode, String> {
         let mut device_manager = AudioDeviceManager::new();
         device_manager.enumerate_devices();
-        let engine_config = EngineConfig::default();
+        let engine_config = EngineConfig {
+            initial_tracks: tracks_to_engine_config(tracks),
+            ..Default::default()
+        };
         let handle = device_manager
             .apply_config(device_config.clone(), engine_config)
             .map_err(|e| e.to_string())?;
@@ -1075,26 +1114,7 @@ impl AppData {
         let engine_config = EngineConfig {
             sample_rate,
             buffer_size: 256,
-            initial_tracks: self
-                .tracks
-                .iter()
-                .map(|t| {
-                    (
-                        t.id,
-                        ma_core::TrackConfig {
-                            name: t.name.clone(),
-                            channel_count: 2,
-                            input_enabled: false,
-                            initial_volume: t.volume,
-                            initial_pan: t.pan,
-                            track_type: match t.kind {
-                                TrackKind::Audio => ma_core::TrackType::Audio,
-                                TrackKind::Midi => ma_core::TrackType::Midi,
-                            },
-                        },
-                    )
-                })
-                .collect(),
+            initial_tracks: tracks_to_engine_config(&self.tracks),
         };
 
         let clips: Vec<ExportClip> = self
@@ -2427,5 +2447,181 @@ impl AppData {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: deterministic UUID from u64 (same pattern as undo_actions tests).
+    fn demo_uuid(n: u64) -> uuid::Uuid {
+        uuid::Uuid::from_u64_pair(0, n)
+    }
+
+    fn make_audio_track(n: u64, name: &str, volume: f32, pan: f32) -> TrackState {
+        TrackState {
+            id: TrackId(demo_uuid(n)),
+            name: name.to_string(),
+            kind: TrackKind::Audio,
+            volume,
+            pan,
+            mute: false,
+            solo: false,
+            color: [255, 0, 0],
+            record_armed: false,
+            input_monitoring: false,
+        }
+    }
+
+    fn make_midi_track(n: u64, name: &str, volume: f32, pan: f32) -> TrackState {
+        TrackState {
+            id: TrackId(demo_uuid(n)),
+            name: name.to_string(),
+            kind: TrackKind::Midi,
+            volume,
+            pan,
+            mute: false,
+            solo: false,
+            color: [0, 255, 0],
+            record_armed: false,
+            input_monitoring: false,
+        }
+    }
+
+    // -- tracks_to_engine_config --
+
+    #[test]
+    fn tracks_to_engine_config_empty_slice_returns_empty_vec() {
+        let result = tracks_to_engine_config(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn tracks_to_engine_config_preserves_track_id() {
+        let track = make_audio_track(42, "Track 42", 0.8, 0.0);
+        let result = tracks_to_engine_config(&[track]);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, TrackId(demo_uuid(42)));
+    }
+
+    #[test]
+    fn tracks_to_engine_config_maps_name_volume_pan() {
+        let track = make_audio_track(1, "Lead Guitar", 0.65, -0.3);
+        let result = tracks_to_engine_config(&[track]);
+        let config = &result[0].1;
+
+        assert_eq!(config.name, "Lead Guitar");
+        assert!((config.initial_volume - 0.65).abs() < f32::EPSILON);
+        assert!((config.initial_pan - (-0.3)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn tracks_to_engine_config_audio_kind_maps_to_audio_type() {
+        let track = make_audio_track(1, "Audio", 0.8, 0.0);
+        let result = tracks_to_engine_config(&[track]);
+
+        assert_eq!(result[0].1.track_type, ma_core::TrackType::Audio);
+    }
+
+    #[test]
+    fn tracks_to_engine_config_midi_kind_maps_to_midi_type() {
+        let track = make_midi_track(2, "Synth", 0.8, 0.0);
+        let result = tracks_to_engine_config(&[track]);
+
+        assert_eq!(result[0].1.track_type, ma_core::TrackType::Midi);
+    }
+
+    #[test]
+    fn tracks_to_engine_config_channel_count_always_two() {
+        let tracks = vec![
+            make_audio_track(1, "A", 1.0, 0.0),
+            make_midi_track(2, "M", 1.0, 0.0),
+        ];
+        let result = tracks_to_engine_config(&tracks);
+
+        for (_, config) in &result {
+            assert_eq!(config.channel_count, 2);
+        }
+    }
+
+    #[test]
+    fn tracks_to_engine_config_input_enabled_always_false() {
+        let tracks = vec![
+            make_audio_track(1, "A", 1.0, 0.0),
+            make_midi_track(2, "M", 1.0, 0.0),
+        ];
+        let result = tracks_to_engine_config(&tracks);
+
+        for (_, config) in &result {
+            assert!(!config.input_enabled);
+        }
+    }
+
+    #[test]
+    fn tracks_to_engine_config_multiple_tracks_preserves_order() {
+        let tracks = vec![
+            make_audio_track(10, "First", 0.5, -1.0),
+            make_midi_track(20, "Second", 0.7, 0.5),
+            make_audio_track(30, "Third", 1.0, 1.0),
+        ];
+        let result = tracks_to_engine_config(&tracks);
+
+        assert_eq!(result.len(), 3);
+
+        // Verify order by checking IDs
+        assert_eq!(result[0].0, TrackId(demo_uuid(10)));
+        assert_eq!(result[1].0, TrackId(demo_uuid(20)));
+        assert_eq!(result[2].0, TrackId(demo_uuid(30)));
+
+        // Verify each track's fields mapped correctly
+        assert_eq!(result[0].1.name, "First");
+        assert_eq!(result[0].1.track_type, ma_core::TrackType::Audio);
+        assert!((result[0].1.initial_volume - 0.5).abs() < f32::EPSILON);
+        assert!((result[0].1.initial_pan - (-1.0)).abs() < f32::EPSILON);
+
+        assert_eq!(result[1].1.name, "Second");
+        assert_eq!(result[1].1.track_type, ma_core::TrackType::Midi);
+        assert!((result[1].1.initial_volume - 0.7).abs() < f32::EPSILON);
+        assert!((result[1].1.initial_pan - 0.5).abs() < f32::EPSILON);
+
+        assert_eq!(result[2].1.name, "Third");
+        assert_eq!(result[2].1.track_type, ma_core::TrackType::Audio);
+        assert!((result[2].1.initial_volume - 1.0).abs() < f32::EPSILON);
+        assert!((result[2].1.initial_pan - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn tracks_to_engine_config_ignores_ui_only_fields() {
+        // mute, solo, color, record_armed, input_monitoring are UI-only
+        // and should NOT affect the engine config
+        let mut track = make_audio_track(1, "Test", 0.8, 0.0);
+        track.mute = true;
+        track.solo = true;
+        track.color = [100, 200, 50];
+        track.record_armed = true;
+        track.input_monitoring = true;
+
+        let result = tracks_to_engine_config(&[track]);
+        let config = &result[0].1;
+
+        // Config should still have the same values regardless of UI-only fields
+        assert_eq!(config.name, "Test");
+        assert!((config.initial_volume - 0.8).abs() < f32::EPSILON);
+        assert!((config.initial_pan - 0.0).abs() < f32::EPSILON);
+        assert_eq!(config.channel_count, 2);
+        assert!(!config.input_enabled);
+        assert_eq!(config.track_type, ma_core::TrackType::Audio);
+    }
+
+    #[test]
+    fn tracks_to_engine_config_extreme_volume_and_pan_values() {
+        let track = make_audio_track(1, "Extreme", 0.0, -1.0);
+        let result = tracks_to_engine_config(&[track]);
+        let config = &result[0].1;
+
+        assert!((config.initial_volume - 0.0).abs() < f32::EPSILON);
+        assert!((config.initial_pan - (-1.0)).abs() < f32::EPSILON);
     }
 }
