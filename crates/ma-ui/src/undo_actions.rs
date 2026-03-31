@@ -609,7 +609,36 @@ impl UndoAction<AppData> for SetNoteVelocityAction {
 }
 
 // ---------------------------------------------------------------------------
-// 18. SetTrackColorAction
+// 18. ReorderTrackAction
+// ---------------------------------------------------------------------------
+
+pub struct ReorderTrackAction {
+    pub old_index: usize,
+    pub new_index: usize,
+}
+
+impl UndoAction<AppData> for ReorderTrackAction {
+    fn description(&self) -> &str {
+        "Reorder Track"
+    }
+    fn apply(&self, state: &mut AppData) {
+        if self.old_index < state.tracks.len() {
+            let track = state.tracks.remove(self.old_index);
+            let target = self.new_index.min(state.tracks.len());
+            state.tracks.insert(target, track);
+        }
+    }
+    fn revert(&self, state: &mut AppData) {
+        if self.new_index < state.tracks.len() {
+            let track = state.tracks.remove(self.new_index);
+            let target = self.old_index.min(state.tracks.len());
+            state.tracks.insert(target, track);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 19. SetTrackColorAction
 // ---------------------------------------------------------------------------
 
 pub struct SetTrackColorAction {

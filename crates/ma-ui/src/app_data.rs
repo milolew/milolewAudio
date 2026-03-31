@@ -281,6 +281,13 @@ pub enum AppEvent {
         track_id: TrackId,
         color: [u8; 3],
     },
+
+    // -- Track reorder --
+    ReorderTrack {
+        from_index: usize,
+        to_index: usize,
+    },
+    UpdateTrackDrag(crate::state::arrangement_state::TrackDragState),
 }
 
 /// Convert UI track states to engine track configs.
@@ -1915,6 +1922,27 @@ impl Model for AppData {
                         }));
                 }
                 self.color_picker = ColorPickerState::default();
+            }
+
+            // -- Track reorder --
+            AppEvent::ReorderTrack {
+                from_index,
+                to_index,
+            } => {
+                let from = *from_index;
+                let to = *to_index;
+                if from < self.tracks.len() && to < self.tracks.len() && from != to {
+                    let track = self.tracks.remove(from);
+                    self.tracks.insert(to, track);
+                    self.undo_manager
+                        .push(Box::new(undo_actions::ReorderTrackAction {
+                            old_index: from,
+                            new_index: to,
+                        }));
+                }
+            }
+            AppEvent::UpdateTrackDrag(drag_state) => {
+                self.arrangement.track_drag = drag_state.clone();
             }
         });
     }

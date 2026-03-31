@@ -11,6 +11,7 @@
 //! 4. Send meter events
 //! 5. Copy output to cpal buffer
 
+use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::time::Instant;
@@ -18,6 +19,7 @@ use std::time::Instant;
 use ma_core::audio_buffer::MAX_CHANNELS;
 use ma_core::commands::EngineCommand;
 use ma_core::events::EngineEvent;
+use ma_core::ids::TrackId;
 
 use crate::command_processor;
 use crate::graph::node::ProcessContext;
@@ -55,6 +57,10 @@ pub struct CallbackState {
 
     /// Track metadata (for command routing).
     pub tracks: Vec<Track>,
+
+    /// Pre-built index for O(1) track lookup by TrackId.
+    /// Built off-thread in build_engine(), read-only on audio thread.
+    pub track_index: HashMap<TrackId, usize>,
 
     /// Index of the InputNode in the graph (for filling capture buffer).
     pub input_node_index: Option<usize>,
@@ -148,6 +154,7 @@ fn audio_callback_inner(state: &mut CallbackState, output: &mut [f32], num_frame
         &mut state.transport,
         &mut state.graph,
         &state.tracks,
+        &state.track_index,
     );
 
     if shutdown {
