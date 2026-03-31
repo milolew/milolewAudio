@@ -102,6 +102,10 @@ pub struct AppData {
     /// Undo/redo history manager.
     #[lens(ignore)]
     undo_manager: UndoManager<Self>,
+
+    /// Audio file preview player (independent cpal stream).
+    #[lens(ignore)]
+    preview: Option<crate::audio_preview::AudioPreview>,
 }
 
 /// Engine connection mode.
@@ -288,6 +292,10 @@ pub enum AppEvent {
         to_index: usize,
     },
     UpdateTrackDrag(crate::state::arrangement_state::TrackDragState),
+
+    // -- Audio preview --
+    PreviewFile(usize),
+    StopPreview,
 }
 
 /// Convert UI track states to engine track configs.
@@ -393,6 +401,7 @@ impl AppData {
             audio_peaks: HashMap::new(),
             audio_data: HashMap::new(),
             undo_manager: UndoManager::new(UNDO_MAX_DEPTH),
+            preview: None,
         };
         app.install_initial_clips();
         app
@@ -1943,6 +1952,43 @@ impl Model for AppData {
             }
             AppEvent::UpdateTrackDrag(drag_state) => {
                 self.arrangement.track_drag = drag_state.clone();
+            }
+
+            // -- Audio preview --
+            AppEvent::PreviewFile(index) => {
+                // Stop existing preview
+                if let Some(p) = self.preview.take() {
+                    p.stop();
+                }
+                if let Some(entry) = self.browser.entries.get(*index).cloned() {
+                    if entry.is_audio() {
+                        match ma_audio_engine::audio_decode::decode_audio_file(&entry.path) {
+                            Ok(decoded) => {
+                                let data: Arc<[f32]> =
+                                    Arc::from(decoded.samples.into_boxed_slice());
+                                match crate::audio_preview::AudioPreview::play(
+                                    data,
+                                    decoded.channels,
+                                    decoded.sample_rate,
+                                    decoded.length_samples,
+                                ) {
+                                    Ok(preview) => {
+                                        self.browser.previewing = Some(*index);
+                                        self.preview = Some(preview);
+                                    }
+                                    Err(e) => log::warn!("Preview playback failed: {e}"),
+                                }
+                            }
+                            Err(e) => log::warn!("Preview decode failed: {e}"),
+                        }
+                    }
+                }
+            }
+            AppEvent::StopPreview => {
+                if let Some(p) = self.preview.take() {
+                    p.stop();
+                }
+                self.browser.previewing = None;
             }
         });
     }
