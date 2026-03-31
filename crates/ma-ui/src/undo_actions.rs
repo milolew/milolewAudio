@@ -608,6 +608,32 @@ impl UndoAction<AppData> for SetNoteVelocityAction {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 18. SetTrackColorAction
+// ---------------------------------------------------------------------------
+
+pub struct SetTrackColorAction {
+    pub track_id: TrackId,
+    pub old_color: [u8; 3],
+    pub new_color: [u8; 3],
+}
+
+impl UndoAction<AppData> for SetTrackColorAction {
+    fn description(&self) -> &str {
+        "Set Track Color"
+    }
+    fn apply(&self, state: &mut AppData) {
+        if let Some(track) = state.tracks.iter_mut().find(|t| t.id == self.track_id) {
+            track.color = self.new_color;
+        }
+    }
+    fn revert(&self, state: &mut AppData) {
+        if let Some(track) = state.tracks.iter_mut().find(|t| t.id == self.track_id) {
+            track.color = self.old_color;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

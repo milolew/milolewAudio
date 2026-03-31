@@ -100,7 +100,146 @@ impl ArrangementView {
                     .class("track-rows");
                 },
             );
+
+            // Color picker popup overlay
+            ColorPickerOverlay::new(cx);
         })
+    }
+}
+
+/// 16-color palette for track color picking.
+const TRACK_COLORS: [[u8; 3]; 16] = [
+    [100, 160, 255],
+    [255, 140, 80],
+    [80, 220, 120],
+    [200, 100, 255],
+    [255, 200, 60],
+    [60, 200, 200],
+    [255, 100, 140],
+    [160, 220, 80],
+    [200, 160, 120],
+    [140, 140, 220],
+    [220, 180, 220],
+    [180, 220, 180],
+    [100, 100, 100],
+    [200, 200, 200],
+    [255, 80, 80],
+    [80, 160, 200],
+];
+
+/// Color picker overlay — 4x4 grid of color swatches, shown on right-click of track header.
+struct ColorPickerOverlay;
+
+impl ColorPickerOverlay {
+    fn new(cx: &mut Context) -> Handle<'_, Self> {
+        Self.build(cx, |_cx| {})
+    }
+}
+
+impl View for ColorPickerOverlay {
+    fn element(&self) -> Option<&'static str> {
+        Some("color-picker-overlay")
+    }
+
+    fn draw(&self, cx: &mut DrawContext, canvas: &Canvas) {
+        let Some(app) = cx.data::<AppData>() else {
+            return;
+        };
+        if !app.color_picker.visible {
+            return;
+        }
+
+        let scale = cx.scale_factor();
+        let swatch_size = 20.0 * scale;
+        let padding = 3.0 * scale;
+        let cols = 4u32;
+        let rows = 4u32;
+        let grid_w = cols as f32 * (swatch_size + padding) + padding;
+        let grid_h = rows as f32 * (swatch_size + padding) + padding;
+
+        // Position below track header, left-aligned with header
+        let popup_x = 4.0 * scale;
+        let popup_y = app.color_picker.anchor_y;
+
+        // Background
+        let mut bg = vg::Paint::default();
+        bg.set_color(vg::Color::from_argb(240, 30, 30, 34));
+        bg.set_style(vg::PaintStyle::Fill);
+        bg.set_anti_alias(true);
+        let rect = vg::Rect::from_xywh(popup_x, popup_y, grid_w, grid_h);
+        let rrect = vg::RRect::new_rect_xy(rect, 4.0 * scale, 4.0 * scale);
+        canvas.draw_rrect(rrect, &bg);
+
+        // Border
+        let mut border = vg::Paint::default();
+        border.set_color(vg::Color::from_argb(200, 80, 80, 80));
+        border.set_style(vg::PaintStyle::Stroke);
+        border.set_stroke_width(1.0 * scale);
+        border.set_anti_alias(true);
+        canvas.draw_rrect(rrect, &border);
+
+        // Color swatches
+        for (i, color) in TRACK_COLORS.iter().enumerate() {
+            let col = (i % cols as usize) as f32;
+            let row = (i / cols as usize) as f32;
+            let x = popup_x + padding + col * (swatch_size + padding);
+            let y = popup_y + padding + row * (swatch_size + padding);
+
+            let mut paint = vg::Paint::default();
+            paint.set_color(vg::Color::from_argb(255, color[0], color[1], color[2]));
+            paint.set_style(vg::PaintStyle::Fill);
+            paint.set_anti_alias(true);
+            let swatch_rect = vg::Rect::from_xywh(x, y, swatch_size, swatch_size);
+            let swatch_rrect = vg::RRect::new_rect_xy(swatch_rect, 3.0 * scale, 3.0 * scale);
+            canvas.draw_rrect(swatch_rrect, &paint);
+        }
+    }
+
+    fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
+        event.map(|window_event, meta| {
+            if let WindowEvent::MouseDown(MouseButton::Left) = window_event {
+                let Some(app) = cx.data::<AppData>() else {
+                    return;
+                };
+                if !app.color_picker.visible {
+                    return;
+                }
+                let Some(track_id) = app.color_picker.track_id else {
+                    return;
+                };
+
+                let scale = cx.scale_factor();
+                let swatch_size = 20.0 * scale;
+                let padding = 3.0 * scale;
+                let cols = 4usize;
+                let popup_x = 4.0 * scale;
+                let popup_y = app.color_picker.anchor_y;
+
+                let mx = cx.mouse().cursor_x;
+                let my = cx.mouse().cursor_y;
+
+                // Check if click is inside a swatch
+                for (i, color) in TRACK_COLORS.iter().enumerate() {
+                    let col = (i % cols) as f32;
+                    let row = (i / cols) as f32;
+                    let sx = popup_x + padding + col * (swatch_size + padding);
+                    let sy = popup_y + padding + row * (swatch_size + padding);
+
+                    if mx >= sx && mx <= sx + swatch_size && my >= sy && my <= sy + swatch_size {
+                        cx.emit(AppEvent::SetTrackColor {
+                            track_id,
+                            color: *color,
+                        });
+                        meta.consume();
+                        return;
+                    }
+                }
+
+                // Click outside swatches — dismiss
+                cx.emit(AppEvent::HideColorPicker);
+                meta.consume();
+            }
+        });
     }
 }
 
@@ -341,6 +480,20 @@ impl View for TrackHeader {
                     }
                 }
                 cx.needs_redraw();
+                meta.consume();
+            }
+
+            // Right-click → show color picker popup
+            if let WindowEvent::MouseDown(MouseButton::Right) = window_event {
+                if let Some(app) = cx.data::<AppData>() {
+                    if let Some(track) = app.tracks.get(self.track_index) {
+                        let bounds = cx.bounds();
+                        cx.emit(AppEvent::ShowColorPicker {
+                            track_id: track.id,
+                            anchor_y: bounds.y + bounds.h,
+                        });
+                    }
+                }
                 meta.consume();
             }
         });

@@ -57,6 +57,15 @@ pub enum ExportBitDepth {
     ThirtyTwoFloat,
 }
 
+/// State for the track color picker popup.
+#[derive(Debug, Clone, Default)]
+pub struct ColorPickerState {
+    pub visible: bool,
+    pub track_id: Option<TrackId>,
+    /// Y position of the anchor (bottom of the track header).
+    pub anchor_y: f32,
+}
+
 /// Root application data — the single vizia Model.
 #[derive(Lens)]
 pub struct AppData {
@@ -73,6 +82,7 @@ pub struct AppData {
     pub device_buffer_size: String,
     pub device_latency: String,
     pub show_preferences: bool,
+    pub color_picker: ColorPickerState,
 
     #[lens(ignore)]
     engine: EngineMode,
@@ -260,6 +270,17 @@ pub enum AppEvent {
 
     // -- Selection --
     SelectAllClips,
+
+    // -- Track color picker --
+    ShowColorPicker {
+        track_id: TrackId,
+        anchor_y: f32,
+    },
+    HideColorPicker,
+    SetTrackColor {
+        track_id: TrackId,
+        color: [u8; 3],
+    },
 }
 
 /// Convert UI track states to engine track configs.
@@ -359,6 +380,7 @@ impl AppData {
             device_buffer_size,
             device_latency,
             show_preferences: false,
+            color_picker: ColorPickerState::default(),
             engine,
             response_buf: Vec::with_capacity(64),
             audio_peaks: HashMap::new(),
@@ -1862,6 +1884,37 @@ impl Model for AppData {
             AppEvent::SelectAllClips => {
                 let all_ids: HashSet<ClipId> = self.clips.iter().map(|c| c.id).collect();
                 self.arrangement.selected_clips = ClipSelection { clips: all_ids };
+            }
+
+            // -- Track color picker --
+            AppEvent::ShowColorPicker { track_id, anchor_y } => {
+                self.color_picker = ColorPickerState {
+                    visible: true,
+                    track_id: Some(*track_id),
+                    anchor_y: *anchor_y,
+                };
+            }
+            AppEvent::HideColorPicker => {
+                self.color_picker = ColorPickerState::default();
+            }
+            AppEvent::SetTrackColor { track_id, color } => {
+                let old_color = self
+                    .tracks
+                    .iter()
+                    .find(|t| t.id == *track_id)
+                    .map(|t| t.color);
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
+                    track.color = *color;
+                }
+                if let Some(old) = old_color {
+                    self.undo_manager
+                        .push(Box::new(undo_actions::SetTrackColorAction {
+                            track_id: *track_id,
+                            old_color: old,
+                            new_color: *color,
+                        }));
+                }
+                self.color_picker = ColorPickerState::default();
             }
         });
     }
