@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Code Review Graph — milolew Audio</title>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({ startOnLoad: true, theme: 'dark', flowchart: { useMaxWidth: true } });
+</script>
+<style>
+:root {
+  --bg: #1a1a2e;
+  --bg2: #16213e;
+  --surface: #0f3460;
+  --text: #e0e0e0;
+  --text-dim: #8899aa;
+  --accent: #e94560;
+  --critical: #b71c1c;
+  --high: #e65100;
+  --medium: #f9a825;
+  --low: #546e7a;
+  --fixed: #2e7d32;
+  --border: #334;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  padding: 2rem;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+h1 { color: #fff; font-size: 2rem; margin-bottom: 0.3rem; }
+h2 { color: var(--accent); font-size: 1.4rem; margin: 2rem 0 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
+h3 { color: #aab; font-size: 1.1rem; margin: 1.5rem 0 0.5rem; }
+.subtitle { color: var(--text-dim); font-size: 0.9rem; margin-bottom: 1.5rem; }
+.delta { display: inline-block; padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 0.85rem; }
+.delta-good { background: #1b5e20; color: #a5d6a7; }
+.delta-new { background: #4a2800; color: #ffb74d; }
+
+/* Summary cards */
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+  margin: 1rem 0;
+}
+.summary-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  text-align: center;
+}
+.summary-card .number { font-size: 2rem; font-weight: 700; }
+.summary-card .label { font-size: 0.8rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; }
+.crit-num { color: #ff5252; }
+.high-num { color: #ff9100; }
+.med-num { color: #ffd600; }
+.low-num { color: #90a4ae; }
+.fixed-num { color: #66bb6a; }
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.85rem; }
+th { background: var(--surface); color: #fff; text-align: left; padding: 0.6rem 0.8rem; font-weight: 600; }
+td { padding: 0.5rem 0.8rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+tr:hover td { background: rgba(255,255,255,0.03); }
+code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 3px; font-size: 0.82rem; }
+
+/* Severity badges */
+.sev { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; min-width: 70px; text-align: center; }
+.sev-critical { background: var(--critical); color: #fff; }
+.sev-high { background: var(--high); color: #fff; }
+.sev-medium { background: var(--medium); color: #000; }
+.sev-low { background: var(--low); color: #eceff1; }
+.sev-fixed { background: var(--fixed); color: #c8e6c9; }
+
+/* Build status */
+.build-status { display: flex; gap: 1rem; flex-wrap: wrap; margin: 1rem 0; }
+.build-badge { padding: 4px 12px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; }
+.build-pass { background: #1b5e20; color: #a5d6a7; }
+.build-warn { background: #4a2800; color: #ffb74d; }
+
+/* Mermaid */
+.mermaid-container { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin: 1rem 0; overflow-x: auto; }
+.mermaid { display: flex; justify-content: center; }
+
+/* Sections */
+.section { margin: 2rem 0; }
+hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+</style>
+</head>
+<body>
+
+<h1>Code Review Graph — milolew Audio</h1>
+<p class="subtitle">
+  Generated: 2026-03-25 | ~17,400 LOC across 3 crates | Commit: <code>0e86840</code><br>
+  Previous: 19 issues (2C/9H/6M/2L) &rarr; <strong>Current: 8 issues (0C/2H/4M/2L)</strong><br>
+  <span class="delta delta-good">-11 fixed</span> <span class="delta delta-good">+0 new</span> = net -11
+</p>
+
+<div class="build-status">
+  <span class="build-badge build-pass">cargo test: 271 passed</span>
+  <span class="build-badge build-pass">clippy: 0 warnings</span>
+  <span class="build-badge build-pass">fmt: 0 diffs</span>
+</div>
+
+<hr>
+
+<h2>Summary</h2>
+
+<div class="summary-grid">
+  <div class="summary-card"><div class="number fixed-num">0</div><div class="label">Critical</div></div>
+  <div class="summary-card"><div class="number high-num">2</div><div class="label">High</div></div>
+  <div class="summary-card"><div class="number med-num">4</div><div class="label">Medium</div></div>
+  <div class="summary-card"><div class="number low-num">2</div><div class="label">Low</div></div>
+  <div class="summary-card"><div class="number fixed-num">20</div><div class="label">Fixed (cumulative)</div></div>
+</div>
+
+<table>
+<tr><th>Crate</th><th>CRITICAL</th><th>HIGH</th><th>MEDIUM</th><th>LOW</th><th>Total</th><th>Delta</th></tr>
+<tr><td><strong>ma-core</strong></td><td>0</td><td>0</td><td>0</td><td>0</td><td><strong>0</strong></td><td>&mdash;</td></tr>
+<tr><td><strong>ma-audio-engine</strong></td><td>0</td><td>0</td><td>1</td><td>0</td><td><strong>1</strong></td><td><span class="sev sev-fixed">-9</span></td></tr>
+<tr><td><strong>ma-ui</strong></td><td>0</td><td>2</td><td>3</td><td>2</td><td><strong>7</strong></td><td><span class="sev sev-fixed">-2</span></td></tr>
+</table>
+
+<hr>
+
+<h2>Fixed Since Last Review (11 issues)</h2>
+
+<table>
+<tr><th>ID</th><th>Was</th><th>Fix</th><th>Commit</th></tr>
+<tr><td>E1</td><td><span class="sev sev-critical">CRIT</span> unsafe ptr + debug_assert bounds</td><td><code>assert!()</code> with descriptive message replaces <code>debug_assert!()</code> on all unsafe pointer paths</td><td><code>bac607f</code></td></tr>
+<tr><td>E2</td><td><span class="sev sev-critical">CRIT</span> 31&times; Relaxed atomic ordering</td><td>Release/Acquire on transport position, recording state, bridge reads; Relaxed documented as acceptable for volume/pan/mute/solo</td><td><code>bac607f</code></td></tr>
+<tr><td>E3</td><td><span class="sev sev-high">HIGH</span> 8 silent ring buffer overflows</td><td><code>DROPPED_EVENTS</code> AtomicU32 in callback, <code>overflow_samples</code> in input_capture, <code>record_overflow</code> in track_node, <code>consecutive_write_errors</code> in disk_io</td><td><code>bac607f</code></td></tr>
+<tr><td>E4</td><td><span class="sev sev-high">HIGH</span> cycle returns partial schedule</td><td>Returns <code>Result&lt;Vec, TopologyError&gt;</code> with diagnostic info; <code>AudioGraph::new()</code> propagates with <code>?</code></td><td><code>bac607f</code></td></tr>
+<tr><td>E5</td><td><span class="sev sev-medium">MED</span> input_capture no overflow counter</td><td><code>overflow_samples: AtomicU64</code> with <code>take_overflow_samples()</code> read/reset; 3 unit tests</td><td><code>bac607f</code></td></tr>
+<tr><td>E6</td><td><span class="sev sev-high">HIGH</span> silent WAV truncation</td><td>Consecutive error counter; <code>RecordingError</code> event after 10 failures; finalization errors also emit events</td><td><code>bac607f</code></td></tr>
+<tr><td>E7</td><td><span class="sev sev-high">HIGH</span> 3 modules zero tests</td><td>14 tests command_processor, 4 disk_io, 3 device_manager &mdash; all dispatch paths covered</td><td><code>bac607f</code></td></tr>
+<tr><td>N1</td><td><span class="sev sev-high">HIGH</span> no catch_unwind</td><td><code>catch_unwind(AssertUnwindSafe(...))</code> wraps audio callback; panic &rarr; silence + flag + event</td><td><code>bac607f</code></td></tr>
+<tr><td>N2</td><td><span class="sev sev-high">HIGH</span> cpal errors hidden</td><td>Error code stored in AtomicU8; callback emits <code>EngineEvent::DeviceError</code> with mapped <code>StreamErrorCode</code></td><td><code>bac607f</code></td></tr>
+<tr><td>U5</td><td><span class="sev sev-high">HIGH</span> 281-line monolithic draw</td><td>Decomposed into <code>arrangement/</code> module: grid.rs, clip_renderer.rs, live_waveform.rs, playhead.rs; draw now ~109 lines</td><td><code>58bd185</code></td></tr>
+<tr><td>U7</td><td><span class="sev sev-medium">MED</span> format!() every frame</td><td>All <code>format!()</code> wrapped in <code>Binding</code> blocks &mdash; only trigger on data change</td><td><code>4a43bdc</code></td></tr>
+</table>
+
+<hr>
+
+<h2>Active Issues &mdash; ma-audio-engine (1)</h2>
+
+<table>
+<tr><th>ID</th><th>Severity</th><th>Category</th><th>Location</th><th>Description</th></tr>
+<tr><td>E8</td><td><span class="sev sev-medium">MEDIUM</span></td><td>Testing</td><td>recording path</td><td>Recording overflow path (input capture &rarr; track_node &rarr; disk_io) has no end-to-end test; unit tests cover individual counters but no integration scenario</td></tr>
+</table>
+
+<h2>Active Issues &mdash; ma-ui (7)</h2>
+
+<table>
+<tr><th>ID</th><th>Severity</th><th>Category</th><th>Location</th><th>Description</th></tr>
+<tr><td>U1</td><td><span class="sev sev-high">HIGH</span></td><td>Architecture</td><td><code>app_data.rs</code> (1345 lines)</td><td>God object: state partially extracted to structs (TransportState, MixerState, etc.) but AppData still owns all + dispatches all events; grew from 765&rarr;1345 due to new features</td></tr>
+<tr><td>U6</td><td><span class="sev sev-high">HIGH</span></td><td>Testing</td><td>most <code>views/</code>, <code>widgets/</code></td><td>Partial coverage: arrangement (14), piano_roll (12), pan_knob (3) tests added; 8+ widget files still at zero</td></tr>
+<tr><td>U4</td><td><span class="sev sev-medium">MEDIUM</span></td><td>Performance</td><td><code>app_data.rs:401-413</code></td><td>O(n) <code>Vec::find()</code> for track/clip lookup at 60fps</td></tr>
+<tr><td>U8</td><td><span class="sev sev-medium">MEDIUM</span></td><td>Observability</td><td><code>bridge.rs:10-11</code></td><td>Ring buffer capacities hard-coded (256/1024), no overflow monitoring</td></tr>
+<tr><td>U12</td><td><span class="sev sev-medium">MEDIUM</span></td><td>Code Quality</td><td><code>app_data.rs:198-330</code></td><td>~133 lines inline demo data in <code>AppData::new()</code></td></tr>
+<tr><td>U10</td><td><span class="sev sev-low">LOW</span></td><td>Consistency</td><td>multiple widgets</td><td>Inconsistent <code>cx.needs_redraw()</code> patterns; annotated with <code>REDRAW:</code> comments but no enforcement</td></tr>
+<tr><td>U11</td><td><span class="sev sev-low">LOW</span></td><td>Dead Code</td><td><code>app_data.rs:409-413</code></td><td><code>clips_for_track()</code> allocates Vec, confirmed unused &mdash; views filter inline</td></tr>
+</table>
+
+<hr>
+
+<h2>Master Issue Graph</h2>
+
+<div class="mermaid-container">
+<pre class="mermaid">
+flowchart TB
+    subgraph CORE["ma-core  ALL FIXED"]
+        direction LR
+        C_ALL["C1-C6: all resolved"]:::fixed
+    end
+
+    subgraph ENGINE["ma-audio-engine  1 active issue"]
+        direction TB
+        subgraph ENG_FIXED["All Fixed"]
+            direction LR
+            EF1["E1-E7,N1,N2\n9 issues resolved"]:::fixed
+        end
+        subgraph ENG_TEST["Testing"]
+            E8["E8 MED\nrecording overflow\nno E2E test"]:::medium
+        end
+    end
+
+    subgraph UI["ma-ui  7 active issues"]
+        direction TB
+        subgraph UI_FIXED["Fixed"]
+            direction LR
+            UF1["U5,U7 resolved"]:::fixed
+        end
+        subgraph UI_ARCH["Architecture"]
+            U1["U1 HIGH\napp_data.rs 1345 lines\ngod object"]:::high
+        end
+        subgraph UI_QUAL["Code Quality"]
+            U12["U12 MED\n133 lines inline demo"]:::medium
+        end
+        subgraph UI_PERF["Performance"]
+            U4["U4 MED\nO-n Vec lookup 60fps"]:::medium
+        end
+        subgraph UI_OBS["Observability"]
+            U8["U8 MED\nring buffer unmonitored"]:::medium
+        end
+        subgraph UI_TEST["Testing"]
+            U6["U6 HIGH\npartial coverage\n8+ widgets untested"]:::high
+        end
+        subgraph UI_MINOR["Low Priority"]
+            U10["U10 LOW\ninconsistent redraw"]:::low
+            U11["U11 LOW\ndead code"]:::low
+        end
+    end
+
+    E8 -.->|"recording path"| U8
+
+    classDef critical fill:#b71c1c,stroke:#ff5252,color:#fff,font-weight:bold
+    classDef high fill:#e65100,stroke:#ff9100,color:#fff
+    classDef medium fill:#f9a825,stroke:#ffd600,color:#000
+    classDef low fill:#546e7a,stroke:#90a4ae,color:#eceff1
+    classDef fixed fill:#2e7d32,stroke:#66bb6a,color:#c8e6c9
+</pre>
+</div>
+
+<hr>
+
+<h2>Fix Priority DAG</h2>
+
+<div class="mermaid-container">
+<pre class="mermaid">
+flowchart LR
+    subgraph S1["Sprint 1: Architecture"]
+        direction TB
+        U1f["U1 HIGH\nSplit app_data.rs\n1345 -> 5-6 files"]:::high
+        U12f["U12 MED\nExtract demo data"]:::medium
+    end
+
+    subgraph S2["Sprint 2: Testing"]
+        direction TB
+        U6f["U6 HIGH\nTests: remaining\nviews + widgets"]:::high
+        E8f["E8 MED\nRecording overflow\nE2E test"]:::medium
+    end
+
+    subgraph S3["Sprint 3: Perf + Polish"]
+        direction TB
+        U4f["U4 MED\nHashMap lookup"]:::medium
+        U8f["U8 MED\nRing buf diagnostics"]:::medium
+        U10f["U10 LOW\nRedraw patterns"]:::low
+        U11f["U11 LOW\nRemove dead code"]:::low
+    end
+
+    U1f --> U6f
+    U12f --> U6f
+    U1f --> U4f
+    U4f --> U8f
+
+    classDef critical fill:#b71c1c,stroke:#ff5252,color:#fff,font-weight:bold
+    classDef high fill:#e65100,stroke:#ff9100,color:#fff
+    classDef medium fill:#f9a825,stroke:#ffd600,color:#000
+    classDef low fill:#546e7a,stroke:#90a4ae,color:#eceff1
+</pre>
+</div>
+
+<hr>
+
+<h2>Critical Files</h2>
+
+<table>
+<tr><th>File</th><th>Issues</th><th>Risk</th><th>Lines</th></tr>
+<tr><td><code>ma-ui/src/app_data.rs</code></td><td>U1, U4, U11, U12</td><td><span class="sev sev-high">Highest</span></td><td>1345</td></tr>
+<tr><td><code>ma-ui/src/views/arrangement/mod.rs</code></td><td>(U6 partial)</td><td><span class="sev sev-medium">Medium</span></td><td>661</td></tr>
+<tr><td><code>ma-ui/src/bridge/bridge.rs</code></td><td>U8</td><td><span class="sev sev-medium">Medium</span></td><td>&mdash;</td></tr>
+<tr><td><code>ma-audio-engine/src/callback.rs</code></td><td>E8 (indirect)</td><td><span class="sev sev-low">Low</span></td><td>292</td></tr>
+</table>
+
+<hr>
+
+<h2>Test Coverage</h2>
+
+<table>
+<tr><th>Module</th><th>Tests</th><th>Status</th></tr>
+<tr><td>ma-core (all modules)</td><td>133</td><td><span class="sev sev-fixed">Comprehensive</span></td></tr>
+<tr><td>ma-audio-engine (all modules)</td><td>82</td><td><span class="sev sev-fixed">Good</span></td></tr>
+<tr><td>ma-audio-engine E2E</td><td>4</td><td><span class="sev sev-fixed">NEW</span></td></tr>
+<tr><td>ma-ui (arrangement, piano_roll, pan_knob, browser, file_loader)</td><td>52</td><td><span class="sev sev-medium">Partial</span></td></tr>
+<tr><td>ma-ui (8 widget files, app_data)</td><td>0</td><td><span class="sev sev-high">Zero</span></td></tr>
+<tr><td><strong>Total</strong></td><td><strong>271</strong></td><td>9 modules at zero (down from 14)</td></tr>
+</table>
+
+<hr>
+<p style="color: var(--text-dim); font-size: 0.8rem; text-align: center; margin-top: 3rem;">
+  Generated by Claude Code review &mdash; milolew Audio &mdash; 2026-03-25
+</p>
+
+</body>
+</html>

@@ -9,6 +9,7 @@
 
 pub mod app_data;
 pub mod config;
+pub mod demo_data;
 pub mod engine_bridge;
 pub mod file_loader;
 pub mod state;

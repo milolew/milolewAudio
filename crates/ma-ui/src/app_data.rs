@@ -262,11 +262,6 @@ pub enum AppEvent {
     SelectAllClips,
 }
 
-/// Create a deterministic UUID for demo data (stable across restarts).
-fn demo_id(n: u64) -> uuid::Uuid {
-    uuid::Uuid::from_u64_pair(0, n)
-}
-
 /// Convert UI track states to engine track configs.
 fn tracks_to_engine_config(tracks: &[TrackState]) -> Vec<(TrackId, ma_core::TrackConfig)> {
     tracks
@@ -289,7 +284,6 @@ fn tracks_to_engine_config(tracks: &[TrackState]) -> Vec<(TrackId, ma_core::Trac
         })
         .collect()
 }
-
 impl Default for AppData {
     fn default() -> Self {
         Self::new()
@@ -299,136 +293,9 @@ impl Default for AppData {
 impl AppData {
     /// Create AppData with demo tracks/clips and a mock engine.
     pub fn new() -> Self {
-        let tracks = vec![
-            TrackState::new_midi(TrackId(demo_id(1)), "Melody", [100, 160, 255]),
-            TrackState::new_midi(TrackId(demo_id(2)), "Bass", [255, 140, 80]),
-            TrackState::new_audio(TrackId(demo_id(3)), "Drums", [80, 220, 120]),
-            TrackState::new_midi(TrackId(demo_id(4)), "Pad", [200, 100, 255]),
-        ];
-
-        let track_ids: Vec<TrackId> = tracks.iter().map(|t| t.id).collect();
-
-        let clips = vec![
-            ClipState {
-                id: ClipId(demo_id(1)),
-                track_id: TrackId(demo_id(1)),
-                start_tick: 0,
-                duration_ticks: PPQN * 8,
-                name: "Melody A".into(),
-                notes: vec![
-                    Note {
-                        id: NoteId(100),
-                        pitch: 60,
-                        start_tick: 0,
-                        duration_ticks: PPQN / 2,
-                        velocity: 100,
-                        channel: 0,
-                    },
-                    Note {
-                        id: NoteId(101),
-                        pitch: 64,
-                        start_tick: PPQN / 2,
-                        duration_ticks: PPQN / 2,
-                        velocity: 90,
-                        channel: 0,
-                    },
-                    Note {
-                        id: NoteId(102),
-                        pitch: 67,
-                        start_tick: PPQN,
-                        duration_ticks: PPQN,
-                        velocity: 110,
-                        channel: 0,
-                    },
-                    Note {
-                        id: NoteId(103),
-                        pitch: 72,
-                        start_tick: PPQN * 2,
-                        duration_ticks: PPQN * 2,
-                        velocity: 80,
-                        channel: 0,
-                    },
-                ],
-                audio_file: None,
-                audio_length_samples: None,
-                audio_sample_rate: None,
-            },
-            ClipState {
-                id: ClipId(demo_id(2)),
-                track_id: TrackId(demo_id(2)),
-                start_tick: 0,
-                duration_ticks: PPQN * 8,
-                name: "Bass Line".into(),
-                notes: vec![
-                    Note {
-                        id: NoteId(200),
-                        pitch: 36,
-                        start_tick: 0,
-                        duration_ticks: PPQN * 2,
-                        velocity: 120,
-                        channel: 0,
-                    },
-                    Note {
-                        id: NoteId(201),
-                        pitch: 40,
-                        start_tick: PPQN * 2,
-                        duration_ticks: PPQN * 2,
-                        velocity: 110,
-                        channel: 0,
-                    },
-                ],
-                audio_file: None,
-                audio_length_samples: None,
-                audio_sample_rate: None,
-            },
-            ClipState {
-                id: ClipId(demo_id(3)),
-                track_id: TrackId(demo_id(3)),
-                start_tick: 0,
-                duration_ticks: PPQN * 16,
-                name: "Drum Loop".into(),
-                notes: Vec::new(),
-                audio_file: None,
-                audio_length_samples: None,
-                audio_sample_rate: None,
-            },
-            ClipState {
-                id: ClipId(demo_id(4)),
-                track_id: TrackId(demo_id(4)),
-                start_tick: PPQN * 4,
-                duration_ticks: PPQN * 12,
-                name: "Pad Chords".into(),
-                notes: vec![
-                    Note {
-                        id: NoteId(300),
-                        pitch: 60,
-                        start_tick: PPQN * 4,
-                        duration_ticks: PPQN * 4,
-                        velocity: 70,
-                        channel: 0,
-                    },
-                    Note {
-                        id: NoteId(301),
-                        pitch: 64,
-                        start_tick: PPQN * 4,
-                        duration_ticks: PPQN * 4,
-                        velocity: 70,
-                        channel: 0,
-                    },
-                    Note {
-                        id: NoteId(302),
-                        pitch: 67,
-                        start_tick: PPQN * 4,
-                        duration_ticks: PPQN * 4,
-                        velocity: 70,
-                        channel: 0,
-                    },
-                ],
-                audio_file: None,
-                audio_length_samples: None,
-                audio_sample_rate: None,
-            },
-        ];
+        let tracks = crate::demo_data::demo_tracks();
+        let track_ids = crate::demo_data::demo_track_ids();
+        let clips = crate::demo_data::demo_clips();
 
         // Load saved preferences (or defaults)
         let prefs = load_preferences();
@@ -518,13 +385,6 @@ impl AppData {
 
     pub fn clip(&self, id: ClipId) -> Option<&ClipState> {
         self.clips.iter().find(|c| c.id == id)
-    }
-
-    pub fn clips_for_track(&self, track_id: TrackId) -> Vec<&ClipState> {
-        self.clips
-            .iter()
-            .filter(|c| c.track_id == track_id)
-            .collect()
     }
 
     /// Whether there is an action available to undo.
