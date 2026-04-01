@@ -85,6 +85,8 @@ pub struct AppData {
     pub color_picker: ColorPickerState,
     pub overdub_enabled: bool,
     pub count_in_bars: u8,
+    pub device_chains:
+        HashMap<TrackId, Vec<crate::views::device_rack::device_slot::DeviceSlotData>>,
 
     #[lens(ignore)]
     engine: EngineMode,
@@ -301,6 +303,12 @@ pub enum AppEvent {
 
     // -- MIDI overdub --
     ToggleOverdub,
+
+    // -- Device bypass --
+    ToggleDeviceBypass {
+        track_id: TrackId,
+        device_index: usize,
+    },
 }
 
 /// Convert UI track states to engine track configs.
@@ -403,6 +411,7 @@ impl AppData {
             color_picker: ColorPickerState::default(),
             overdub_enabled: false,
             count_in_bars: 1,
+            device_chains: HashMap::new(),
             engine,
             response_buf: Vec::with_capacity(64),
             audio_peaks: HashMap::new(),
@@ -2017,6 +2026,18 @@ impl Model for AppData {
             // -- MIDI overdub --
             AppEvent::ToggleOverdub => {
                 self.overdub_enabled = !self.overdub_enabled;
+            }
+
+            // -- Device bypass --
+            AppEvent::ToggleDeviceBypass {
+                track_id,
+                device_index,
+            } => {
+                if let Some(chain) = self.device_chains.get_mut(track_id) {
+                    if let Some(device) = chain.get_mut(*device_index) {
+                        device.bypassed = !device.bypassed;
+                    }
+                }
             }
         });
     }
