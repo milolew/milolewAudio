@@ -55,6 +55,11 @@ pub enum EngineCommand {
         velocity: u8,
     },
 
+    // Count-in pre-roll
+    RecordWithCountIn {
+        bars: u8,
+    },
+
     // Clip note editing
     AddNote {
         clip_id: ClipId,

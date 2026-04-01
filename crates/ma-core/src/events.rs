@@ -44,6 +44,13 @@ pub enum EngineEvent {
     /// Recording has been finalized for a track.
     RecordingComplete { track_id: TrackId },
 
+    // ── Count-in ──────────────────────────────────────────────
+    /// A count-in beat has been reached (for UI display).
+    CountInBeat { bar: u8, beat: u8, total_bars: u8 },
+
+    /// Count-in is complete — recording has started.
+    CountInComplete,
+
     // ── Errors (non-fatal, engine keeps running) ───────────────
     /// Audio callback did not complete in time (buffer underrun).
     AudioUnderrun,

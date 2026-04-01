@@ -270,6 +270,7 @@ pub fn build_engine(
         transport,
         tracks,
         track_index,
+        metronome: crate::metronome::Metronome::new(config.sample_rate as f64),
         input_node_index: input_node_graph_index,
         output_node_index: output_node_graph_index,
         input_capture_reader: None,

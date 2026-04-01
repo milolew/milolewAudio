@@ -27,6 +27,7 @@ pub mod engine;
 pub mod export;
 pub mod graph;
 pub mod input_capture;
+pub mod metronome;
 pub mod midi_recorder;
 pub mod peak_cache;
 pub mod track;

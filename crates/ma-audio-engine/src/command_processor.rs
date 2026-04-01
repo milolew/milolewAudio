@@ -139,6 +139,13 @@ pub fn process_commands(
                     EngineEvent::TransportStateChanged(TransportState::Recording),
                 );
             }
+            EngineCommand::StartRecordingWithCountIn { bars } => {
+                transport.start_count_in(bars);
+                push_event(
+                    event_producer,
+                    EngineEvent::TransportStateChanged(TransportState::CountingIn),
+                );
+            }
             EngineCommand::StopRecording => {
                 transport.stop_recording();
                 // Clear is_recording on all track nodes (using cached graph index)

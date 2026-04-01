@@ -84,6 +84,7 @@ pub struct AppData {
     pub show_preferences: bool,
     pub color_picker: ColorPickerState,
     pub overdub_enabled: bool,
+    pub count_in_bars: u8,
 
     #[lens(ignore)]
     engine: EngineMode,
@@ -401,6 +402,7 @@ impl AppData {
             show_preferences: false,
             color_picker: ColorPickerState::default(),
             overdub_enabled: false,
+            count_in_bars: 1,
             engine,
             response_buf: Vec::with_capacity(64),
             audio_peaks: HashMap::new(),
@@ -487,6 +489,9 @@ impl AppData {
             EngineCommand::Stop => Some(CoreCommand::Stop),
             EngineCommand::Pause => Some(CoreCommand::Pause),
             EngineCommand::Record => Some(CoreCommand::StartRecording),
+            EngineCommand::RecordWithCountIn { bars } => {
+                Some(CoreCommand::StartRecordingWithCountIn { bars: *bars })
+            }
             EngineCommand::SetTempo(bpm) => Some(CoreCommand::SetTempo(*bpm)),
             EngineCommand::SetTrackVolume { track_id, volume } => {
                 Some(CoreCommand::SetTrackVolume {
@@ -698,6 +703,13 @@ impl AppData {
                 }
                 EngineResponse::RecordingError { track_id, error } => {
                     log::error!("Recording error on track {track_id:?}: {error}");
+                }
+                EngineResponse::CountInBeat { bar, beat, .. } => {
+                    log::info!("Count-in: bar {}, beat {}", bar + 1, beat + 1);
+                }
+                EngineResponse::CountInComplete => {
+                    log::info!("Count-in complete — recording started");
+                    self.transport.is_recording = true;
                 }
             }
         }
@@ -1187,8 +1199,14 @@ impl AppData {
         self.transport.record_start_position = Some(self.transport.position);
         self.transport.recording_tracks = armed_tracks.iter().map(|(id, _)| *id).collect();
 
-        // Send StartRecording to engine (sets is_recording on armed track nodes)
-        self.send_command(EngineCommand::Record);
+        // Send recording command — with or without count-in pre-roll
+        if self.count_in_bars > 0 {
+            self.send_command(EngineCommand::RecordWithCountIn {
+                bars: self.count_in_bars,
+            });
+        } else {
+            self.send_command(EngineCommand::Record);
+        }
 
         // Start disk recording for each armed track
         if let EngineMode::Real { bridge, .. } = &mut self.engine {
