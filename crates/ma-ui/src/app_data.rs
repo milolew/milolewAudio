@@ -83,6 +83,7 @@ pub struct AppData {
     pub device_latency: String,
     pub show_preferences: bool,
     pub color_picker: ColorPickerState,
+    pub overdub_enabled: bool,
 
     #[lens(ignore)]
     engine: EngineMode,
@@ -296,6 +297,9 @@ pub enum AppEvent {
     // -- Audio preview --
     PreviewFile(usize),
     StopPreview,
+
+    // -- MIDI overdub --
+    ToggleOverdub,
 }
 
 /// Convert UI track states to engine track configs.
@@ -396,6 +400,7 @@ impl AppData {
             device_latency,
             show_preferences: false,
             color_picker: ColorPickerState::default(),
+            overdub_enabled: false,
             engine,
             response_buf: Vec::with_capacity(64),
             audio_peaks: HashMap::new(),
@@ -1989,6 +1994,11 @@ impl Model for AppData {
                     p.stop();
                 }
                 self.browser.previewing = None;
+            }
+
+            // -- MIDI overdub --
+            AppEvent::ToggleOverdub => {
+                self.overdub_enabled = !self.overdub_enabled;
             }
         });
     }

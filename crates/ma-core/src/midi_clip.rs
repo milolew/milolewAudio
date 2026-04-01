@@ -81,6 +81,23 @@ impl MidiClip {
     pub fn event_count(&self) -> usize {
         self.events.len()
     }
+
+    /// Merge another clip's events into this one, returning a new combined clip.
+    ///
+    /// `other_offset` is the tick offset of `other` relative to this clip's start.
+    /// The resulting clip's duration is the maximum of both clips' extents.
+    /// Events are sorted by tick in the output.
+    pub fn merged_with(&self, other: &MidiClip, other_offset: Tick) -> MidiClip {
+        let mut combined = self.events.clone();
+        for event in &other.events {
+            combined.push(MidiEvent {
+                tick: event.tick + other_offset,
+                message: event.message,
+            });
+        }
+        let max_duration = self.duration_ticks.max(other.duration_ticks + other_offset);
+        MidiClip::new(combined, max_duration)
+    }
 }
 
 /// A reference to a MIDI clip placed at a specific position on the timeline.
@@ -281,5 +298,48 @@ mod tests {
         assert_eq!(clip.events_in_range(0, 1).len(), 1);
         // Event at tick 0 should NOT be in [1, 2)
         assert_eq!(clip.events_in_range(1, 2).len(), 0);
+    }
+
+    #[test]
+    fn merged_with_combines_and_sorts() {
+        let clip_a = MidiClip::new(
+            vec![note_on_event(0, 60, 100), note_on_event(480, 64, 80)],
+            960,
+        );
+        let clip_b = MidiClip::new(
+            vec![note_on_event(0, 67, 90), note_on_event(240, 72, 70)],
+            480,
+        );
+
+        let merged = clip_a.merged_with(&clip_b, 0);
+        assert_eq!(merged.event_count(), 4);
+        assert_eq!(merged.duration_ticks(), 960);
+        // Events should be sorted by tick
+        assert_eq!(merged.events()[0].tick, 0);
+        assert_eq!(merged.events()[1].tick, 0);
+        assert_eq!(merged.events()[2].tick, 240);
+        assert_eq!(merged.events()[3].tick, 480);
+    }
+
+    #[test]
+    fn merged_with_offset_shifts_other_events() {
+        let clip_a = MidiClip::new(vec![note_on_event(0, 60, 100)], 480);
+        let clip_b = MidiClip::new(vec![note_on_event(0, 64, 80)], 480);
+
+        let merged = clip_a.merged_with(&clip_b, 480);
+        assert_eq!(merged.event_count(), 2);
+        assert_eq!(merged.events()[0].tick, 0);
+        assert_eq!(merged.events()[1].tick, 480);
+        assert_eq!(merged.duration_ticks(), 960); // max(480, 480+480)
+    }
+
+    #[test]
+    fn merged_with_empty_clip() {
+        let clip_a = MidiClip::new(vec![note_on_event(0, 60, 100)], 960);
+        let clip_b = MidiClip::new(vec![], 0);
+
+        let merged = clip_a.merged_with(&clip_b, 0);
+        assert_eq!(merged.event_count(), 1);
+        assert_eq!(merged.duration_ticks(), 960);
     }
 }

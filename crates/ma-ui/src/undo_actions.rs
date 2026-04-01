@@ -638,7 +638,33 @@ impl UndoAction<AppData> for ReorderTrackAction {
 }
 
 // ---------------------------------------------------------------------------
-// 19. SetTrackColorAction
+// 19. OverdubAction
+// ---------------------------------------------------------------------------
+
+pub struct OverdubAction {
+    pub clip_id: ClipId,
+    pub old_clip: ClipState,
+    pub new_clip: ClipState,
+}
+
+impl UndoAction<AppData> for OverdubAction {
+    fn description(&self) -> &str {
+        "MIDI Overdub"
+    }
+    fn apply(&self, state: &mut AppData) {
+        if let Some(clip) = state.clips.iter_mut().find(|c| c.id == self.clip_id) {
+            *clip = self.new_clip.clone();
+        }
+    }
+    fn revert(&self, state: &mut AppData) {
+        if let Some(clip) = state.clips.iter_mut().find(|c| c.id == self.clip_id) {
+            *clip = self.old_clip.clone();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 20. SetTrackColorAction
 // ---------------------------------------------------------------------------
 
 pub struct SetTrackColorAction {
