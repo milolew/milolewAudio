@@ -4,6 +4,7 @@
 //! (no allocations). Parameter changes are applied immediately via atomics.
 //! Topology changes are deferred to the graph-build thread.
 
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
 use ma_core::commands::EngineCommand;
@@ -42,6 +43,7 @@ pub fn process_commands(
     transport: &mut Transport,
     graph: &mut AudioGraph,
     tracks: &[crate::track::Track],
+    track_index: &HashMap<TrackId, usize>,
 ) -> bool {
     let mut shutdown = false;
     let mut processed = 0;
@@ -91,25 +93,25 @@ pub fn process_commands(
 
             // ── Track parameters ──
             EngineCommand::SetTrackVolume { track_id, volume } => {
-                if let Some(track) = find_track(tracks, track_id) {
+                if let Some(track) = find_track(tracks, track_index, track_id) {
                     // ORDERING: Relaxed OK — single-value eventual consistency (UI parameter)
                     track.volume.store(volume, Ordering::Relaxed);
                 }
             }
             EngineCommand::SetTrackPan { track_id, pan } => {
-                if let Some(track) = find_track(tracks, track_id) {
+                if let Some(track) = find_track(tracks, track_index, track_id) {
                     // ORDERING: Relaxed OK — single-value eventual consistency (UI parameter)
                     track.pan.store(pan, Ordering::Relaxed);
                 }
             }
             EngineCommand::SetTrackMute { track_id, mute } => {
-                if let Some(track) = find_track(tracks, track_id) {
+                if let Some(track) = find_track(tracks, track_index, track_id) {
                     // ORDERING: Relaxed OK — single-value eventual consistency (UI parameter)
                     track.mute.store(mute, Ordering::Relaxed);
                 }
             }
             EngineCommand::SetTrackSolo { track_id, solo } => {
-                if let Some(track) = find_track(tracks, track_id) {
+                if let Some(track) = find_track(tracks, track_index, track_id) {
                     // ORDERING: Relaxed OK — single-value eventual consistency (UI parameter)
                     track.solo.store(solo, Ordering::Relaxed);
                 }
@@ -117,7 +119,7 @@ pub fn process_commands(
 
             // ── Recording ──
             EngineCommand::ArmTrack { track_id, armed } => {
-                if let Some(track) = find_track(tracks, track_id) {
+                if let Some(track) = find_track(tracks, track_index, track_id) {
                     // ORDERING: Relaxed OK — single-value eventual consistency (UI parameter)
                     track.record_armed.store(armed, Ordering::Relaxed);
                 }
@@ -135,6 +137,13 @@ pub fn process_commands(
                 push_event(
                     event_producer,
                     EngineEvent::TransportStateChanged(TransportState::Recording),
+                );
+            }
+            EngineCommand::StartRecordingWithCountIn { bars } => {
+                transport.start_count_in(bars);
+                push_event(
+                    event_producer,
+                    EngineEvent::TransportStateChanged(TransportState::CountingIn),
                 );
             }
             EngineCommand::StopRecording => {
@@ -158,7 +167,7 @@ pub fn process_commands(
                 clip,
                 start_tick,
             } => {
-                if let Some(track) = find_track(tracks, track_id) {
+                if let Some(track) = find_track(tracks, track_index, track_id) {
                     if let Some(idx) = track.player_node_graph_index {
                         if let Some(player) = graph.node_downcast_mut::<MidiPlayerNode>(idx) {
                             player.add_clip(ma_core::midi_clip::MidiClipRef {
@@ -171,7 +180,7 @@ pub fn process_commands(
                 }
             }
             EngineCommand::RemoveMidiClipFromPlayer { track_id, clip_id } => {
-                if let Some(track) = find_track(tracks, track_id) {
+                if let Some(track) = find_track(tracks, track_index, track_id) {
                     if let Some(idx) = track.player_node_graph_index {
                         if let Some(player) = graph.node_downcast_mut::<MidiPlayerNode>(idx) {
                             player.remove_clip(clip_id);
@@ -185,7 +194,7 @@ pub fn process_commands(
                 track_id,
                 monitoring,
             } => {
-                if let Some(track) = find_track(tracks, track_id) {
+                if let Some(track) = find_track(tracks, track_index, track_id) {
                     if let Some(idx) = track.track_node_graph_index {
                         if let Some(track_node) = graph.node_downcast_mut::<TrackNode>(idx) {
                             track_node
@@ -208,10 +217,14 @@ pub fn process_commands(
     shutdown
 }
 
-/// Find a track by its ID in the tracks slice.
+/// Find a track by its ID using the pre-built HashMap index (O(1) lookup).
 #[inline]
-fn find_track(tracks: &[crate::track::Track], id: TrackId) -> Option<&crate::track::Track> {
-    tracks.iter().find(|t| t.id == id)
+fn find_track<'a>(
+    tracks: &'a [crate::track::Track],
+    track_index: &HashMap<TrackId, usize>,
+    id: TrackId,
+) -> Option<&'a crate::track::Track> {
+    track_index.get(&id).and_then(|&i| tracks.get(i))
 }
 
 /// Set the is_recording flag on a track node using its cached graph index.
@@ -261,6 +274,7 @@ mod tests {
             &mut state.transport,
             &mut state.graph,
             &state.tracks,
+            &state.track_index,
         )
     }
 
@@ -416,6 +430,27 @@ mod tests {
         producer.push(EngineCommand::StopRecording).unwrap();
         dispatch(&mut state);
         assert_eq!(state.transport.state(), TransportState::Playing);
+    }
+
+    #[test]
+    fn start_recording_with_count_in_command() {
+        let (mut producer, mut consumer, mut state) = test_engine();
+        producer
+            .push(EngineCommand::StartRecordingWithCountIn { bars: 1 })
+            .unwrap();
+        dispatch(&mut state);
+        assert_eq!(state.transport.state(), TransportState::CountingIn);
+        // Should emit TransportStateChanged(CountingIn) event
+        let mut found = false;
+        while let Ok(event) = consumer.pop() {
+            if matches!(
+                event,
+                EngineEvent::TransportStateChanged(TransportState::CountingIn)
+            ) {
+                found = true;
+            }
+        }
+        assert!(found, "Expected CountingIn state change event");
     }
 
     #[test]

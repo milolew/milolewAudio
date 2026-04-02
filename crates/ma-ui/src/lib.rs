@@ -8,7 +8,9 @@
 //! Communicates with the audio engine via lock-free SPSC ring buffers.
 
 pub mod app_data;
+pub mod audio_preview;
 pub mod config;
+pub mod demo_data;
 pub mod engine_bridge;
 pub mod file_loader;
 pub mod state;

@@ -36,6 +36,18 @@ pub struct Transport {
 
     /// Whether recording is active.
     is_recording: Arc<AtomicBool>,
+
+    // ── Count-in state ──
+    /// Number of bars for count-in (0 = no count-in).
+    count_in_bars: u8,
+    /// Current bar within count-in (0-based).
+    count_in_bar: u8,
+    /// Current beat within bar (0-based).
+    count_in_beat: u8,
+    /// Samples per beat (computed from tempo and sample_rate).
+    count_in_samples_per_beat: i64,
+    /// Sample counter within current beat.
+    count_in_sample_counter: i64,
 }
 
 impl Transport {
@@ -50,6 +62,11 @@ impl Transport {
             loop_end: 0,
             loop_enabled: false,
             is_recording: Arc::new(AtomicBool::new(false)),
+            count_in_bars: 0,
+            count_in_bar: 0,
+            count_in_beat: 0,
+            count_in_samples_per_beat: 0,
+            count_in_sample_counter: 0,
         }
     }
 
@@ -107,7 +124,10 @@ impl Transport {
 
     /// Pause at current position.
     pub fn pause(&mut self) {
-        if self.state == TransportState::Playing || self.state == TransportState::Recording {
+        if matches!(
+            self.state,
+            TransportState::Playing | TransportState::Recording | TransportState::CountingIn
+        ) {
             self.state = TransportState::Paused;
         }
     }
@@ -152,6 +172,65 @@ impl Transport {
         }
     }
 
+    /// Start a count-in pre-roll before recording.
+    ///
+    /// During count-in, the metronome plays but the playhead does not advance
+    /// and recording does not start until count-in completes.
+    pub fn start_count_in(&mut self, bars: u8) {
+        if self.state == TransportState::Stopped {
+            self.play_start_position = self.position();
+        }
+        self.count_in_bars = bars;
+        self.count_in_bar = 0;
+        self.count_in_beat = 0;
+        let beats_per_second = self.tempo / 60.0;
+        self.count_in_samples_per_beat = (self.sample_rate / beats_per_second) as i64;
+        // Initialize counter to samples_per_beat so the first callback
+        // immediately fires beat 0 (the downbeat click).
+        self.count_in_sample_counter = self.count_in_samples_per_beat;
+        self.state = TransportState::CountingIn;
+    }
+
+    /// Advance the count-in counter by `frames` samples.
+    ///
+    /// Returns `Some((bar, beat, is_complete))` whenever a beat boundary is crossed.
+    /// `is_complete` is true when the final beat of the count-in is reached,
+    /// at which point the caller should transition to Recording.
+    ///
+    /// The playhead does NOT advance during count-in.
+    pub fn advance_count_in(&mut self, frames: FrameCount) -> Option<(u8, u8, bool)> {
+        if self.state != TransportState::CountingIn {
+            return None;
+        }
+
+        self.count_in_sample_counter += frames as i64;
+
+        if self.count_in_sample_counter >= self.count_in_samples_per_beat {
+            self.count_in_sample_counter -= self.count_in_samples_per_beat;
+
+            let bar = self.count_in_bar;
+            let beat = self.count_in_beat;
+
+            // Advance to next beat
+            self.count_in_beat += 1;
+            if self.count_in_beat >= 4 {
+                // 4/4 time signature (hardcoded for now)
+                self.count_in_beat = 0;
+                self.count_in_bar += 1;
+            }
+
+            let is_complete = self.count_in_bar >= self.count_in_bars;
+            Some((bar, beat, is_complete))
+        } else {
+            None
+        }
+    }
+
+    /// Total count-in bars.
+    pub fn count_in_bars(&self) -> u8 {
+        self.count_in_bars
+    }
+
     /// Advance the playhead by one buffer's worth of frames.
     /// Called at the beginning of each audio callback.
     ///
@@ -174,8 +253,8 @@ impl Transport {
                 // ORDERING: Release — cross-thread state read by UI with Acquire
                 self.position.store(new_pos, Ordering::Release);
             }
-            TransportState::Stopped | TransportState::Paused => {
-                // Don't advance
+            TransportState::Stopped | TransportState::Paused | TransportState::CountingIn => {
+                // Don't advance (count-in uses its own counter)
             }
         }
 
@@ -245,5 +324,83 @@ mod tests {
         assert_eq!(t.tempo(), 20.0);
         t.set_tempo(5000.0);
         assert_eq!(t.tempo(), 999.0);
+    }
+
+    #[test]
+    fn count_in_sets_state() {
+        let mut t = Transport::new(48000.0);
+        t.start_count_in(1);
+        assert_eq!(t.state(), TransportState::CountingIn);
+        assert_eq!(t.count_in_bars(), 1);
+    }
+
+    #[test]
+    fn count_in_fires_first_beat_immediately() {
+        let mut t = Transport::new(48000.0);
+        t.set_tempo(120.0); // 2 beats/sec → 24000 samples/beat
+        t.start_count_in(1);
+
+        // First callback should fire beat 0 (counter initialized to samples_per_beat)
+        let result = t.advance_count_in(256);
+        assert!(result.is_some(), "First beat should fire on first callback");
+        let (bar, beat, _) = result.unwrap();
+        assert_eq!(bar, 0);
+        assert_eq!(beat, 0);
+    }
+
+    #[test]
+    fn count_in_does_not_advance_playhead() {
+        let mut t = Transport::new(48000.0);
+        t.set_position(1000);
+        t.start_count_in(1);
+        t.advance(256);
+        assert_eq!(
+            t.position(),
+            1000,
+            "Playhead should not advance during count-in"
+        );
+    }
+
+    #[test]
+    fn count_in_single_bar_completes_after_4_beats() {
+        let mut t = Transport::new(48000.0);
+        t.set_tempo(120.0); // 24000 samples/beat
+        t.start_count_in(1);
+
+        let mut beats_fired = 0;
+        let mut completed = false;
+        // Run enough frames for 4 beats + margin
+        for _ in 0..500 {
+            if let Some((_bar, _beat, is_complete)) = t.advance_count_in(256) {
+                beats_fired += 1;
+                if is_complete {
+                    completed = true;
+                    break;
+                }
+            }
+        }
+        assert_eq!(beats_fired, 4, "1 bar of 4/4 = 4 beats");
+        assert!(completed, "Count-in should complete after 4 beats");
+    }
+
+    #[test]
+    fn count_in_two_bars_completes_after_8_beats() {
+        let mut t = Transport::new(48000.0);
+        t.set_tempo(120.0);
+        t.start_count_in(2);
+
+        let mut beats_fired = 0;
+        let mut completed = false;
+        for _ in 0..1000 {
+            if let Some((_bar, _beat, is_complete)) = t.advance_count_in(256) {
+                beats_fired += 1;
+                if is_complete {
+                    completed = true;
+                    break;
+                }
+            }
+        }
+        assert_eq!(beats_fired, 8, "2 bars of 4/4 = 8 beats");
+        assert!(completed);
     }
 }

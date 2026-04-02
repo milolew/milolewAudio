@@ -58,6 +58,8 @@ pub struct BrowserState {
     pub filter: BrowserFilter,
     /// Whether the browser panel is visible.
     pub visible: bool,
+    /// Index of the entry currently being previewed (audio playback).
+    pub previewing: Option<usize>,
 }
 
 impl Default for BrowserState {
@@ -69,6 +71,7 @@ impl Default for BrowserState {
             selected_index: None,
             filter: BrowserFilter::default(),
             visible: false,
+            previewing: None,
         }
     }
 }

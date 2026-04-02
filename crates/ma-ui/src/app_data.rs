@@ -57,6 +57,15 @@ pub enum ExportBitDepth {
     ThirtyTwoFloat,
 }
 
+/// State for the track color picker popup.
+#[derive(Debug, Clone, Default)]
+pub struct ColorPickerState {
+    pub visible: bool,
+    pub track_id: Option<TrackId>,
+    /// Y position of the anchor (bottom of the track header).
+    pub anchor_y: f32,
+}
+
 /// Root application data — the single vizia Model.
 #[derive(Lens)]
 pub struct AppData {
@@ -73,6 +82,11 @@ pub struct AppData {
     pub device_buffer_size: String,
     pub device_latency: String,
     pub show_preferences: bool,
+    pub color_picker: ColorPickerState,
+    pub overdub_enabled: bool,
+    pub count_in_bars: u8,
+    pub device_chains:
+        HashMap<TrackId, Vec<crate::views::device_rack::device_slot::DeviceSlotData>>,
 
     #[lens(ignore)]
     engine: EngineMode,
@@ -92,6 +106,10 @@ pub struct AppData {
     /// Undo/redo history manager.
     #[lens(ignore)]
     undo_manager: UndoManager<Self>,
+
+    /// Audio file preview player (independent cpal stream).
+    #[lens(ignore)]
+    preview: Option<crate::audio_preview::AudioPreview>,
 }
 
 /// Engine connection mode.
@@ -260,11 +278,37 @@ pub enum AppEvent {
 
     // -- Selection --
     SelectAllClips,
-}
 
-/// Create a deterministic UUID for demo data (stable across restarts).
-fn demo_id(n: u64) -> uuid::Uuid {
-    uuid::Uuid::from_u64_pair(0, n)
+    // -- Track color picker --
+    ShowColorPicker {
+        track_id: TrackId,
+        anchor_y: f32,
+    },
+    HideColorPicker,
+    SetTrackColor {
+        track_id: TrackId,
+        color: [u8; 3],
+    },
+
+    // -- Track reorder --
+    ReorderTrack {
+        from_index: usize,
+        to_index: usize,
+    },
+    UpdateTrackDrag(crate::state::arrangement_state::TrackDragState),
+
+    // -- Audio preview --
+    PreviewFile(usize),
+    StopPreview,
+
+    // -- MIDI overdub --
+    ToggleOverdub,
+
+    // -- Device bypass --
+    ToggleDeviceBypass {
+        track_id: TrackId,
+        device_index: usize,
+    },
 }
 
 /// Convert UI track states to engine track configs.
@@ -289,7 +333,6 @@ fn tracks_to_engine_config(tracks: &[TrackState]) -> Vec<(TrackId, ma_core::Trac
         })
         .collect()
 }
-
 impl Default for AppData {
     fn default() -> Self {
         Self::new()
@@ -299,136 +342,9 @@ impl Default for AppData {
 impl AppData {
     /// Create AppData with demo tracks/clips and a mock engine.
     pub fn new() -> Self {
-        let tracks = vec![
-            TrackState::new_midi(TrackId(demo_id(1)), "Melody", [100, 160, 255]),
-            TrackState::new_midi(TrackId(demo_id(2)), "Bass", [255, 140, 80]),
-            TrackState::new_audio(TrackId(demo_id(3)), "Drums", [80, 220, 120]),
-            TrackState::new_midi(TrackId(demo_id(4)), "Pad", [200, 100, 255]),
-        ];
-
-        let track_ids: Vec<TrackId> = tracks.iter().map(|t| t.id).collect();
-
-        let clips = vec![
-            ClipState {
-                id: ClipId(demo_id(1)),
-                track_id: TrackId(demo_id(1)),
-                start_tick: 0,
-                duration_ticks: PPQN * 8,
-                name: "Melody A".into(),
-                notes: vec![
-                    Note {
-                        id: NoteId(100),
-                        pitch: 60,
-                        start_tick: 0,
-                        duration_ticks: PPQN / 2,
-                        velocity: 100,
-                        channel: 0,
-                    },
-                    Note {
-                        id: NoteId(101),
-                        pitch: 64,
-                        start_tick: PPQN / 2,
-                        duration_ticks: PPQN / 2,
-                        velocity: 90,
-                        channel: 0,
-                    },
-                    Note {
-                        id: NoteId(102),
-                        pitch: 67,
-                        start_tick: PPQN,
-                        duration_ticks: PPQN,
-                        velocity: 110,
-                        channel: 0,
-                    },
-                    Note {
-                        id: NoteId(103),
-                        pitch: 72,
-                        start_tick: PPQN * 2,
-                        duration_ticks: PPQN * 2,
-                        velocity: 80,
-                        channel: 0,
-                    },
-                ],
-                audio_file: None,
-                audio_length_samples: None,
-                audio_sample_rate: None,
-            },
-            ClipState {
-                id: ClipId(demo_id(2)),
-                track_id: TrackId(demo_id(2)),
-                start_tick: 0,
-                duration_ticks: PPQN * 8,
-                name: "Bass Line".into(),
-                notes: vec![
-                    Note {
-                        id: NoteId(200),
-                        pitch: 36,
-                        start_tick: 0,
-                        duration_ticks: PPQN * 2,
-                        velocity: 120,
-                        channel: 0,
-                    },
-                    Note {
-                        id: NoteId(201),
-                        pitch: 40,
-                        start_tick: PPQN * 2,
-                        duration_ticks: PPQN * 2,
-                        velocity: 110,
-                        channel: 0,
-                    },
-                ],
-                audio_file: None,
-                audio_length_samples: None,
-                audio_sample_rate: None,
-            },
-            ClipState {
-                id: ClipId(demo_id(3)),
-                track_id: TrackId(demo_id(3)),
-                start_tick: 0,
-                duration_ticks: PPQN * 16,
-                name: "Drum Loop".into(),
-                notes: Vec::new(),
-                audio_file: None,
-                audio_length_samples: None,
-                audio_sample_rate: None,
-            },
-            ClipState {
-                id: ClipId(demo_id(4)),
-                track_id: TrackId(demo_id(4)),
-                start_tick: PPQN * 4,
-                duration_ticks: PPQN * 12,
-                name: "Pad Chords".into(),
-                notes: vec![
-                    Note {
-                        id: NoteId(300),
-                        pitch: 60,
-                        start_tick: PPQN * 4,
-                        duration_ticks: PPQN * 4,
-                        velocity: 70,
-                        channel: 0,
-                    },
-                    Note {
-                        id: NoteId(301),
-                        pitch: 64,
-                        start_tick: PPQN * 4,
-                        duration_ticks: PPQN * 4,
-                        velocity: 70,
-                        channel: 0,
-                    },
-                    Note {
-                        id: NoteId(302),
-                        pitch: 67,
-                        start_tick: PPQN * 4,
-                        duration_ticks: PPQN * 4,
-                        velocity: 70,
-                        channel: 0,
-                    },
-                ],
-                audio_file: None,
-                audio_length_samples: None,
-                audio_sample_rate: None,
-            },
-        ];
+        let tracks = crate::demo_data::demo_tracks();
+        let track_ids = crate::demo_data::demo_track_ids();
+        let clips = crate::demo_data::demo_clips();
 
         // Load saved preferences (or defaults)
         let prefs = load_preferences();
@@ -492,11 +408,16 @@ impl AppData {
             device_buffer_size,
             device_latency,
             show_preferences: false,
+            color_picker: ColorPickerState::default(),
+            overdub_enabled: false,
+            count_in_bars: 1,
+            device_chains: HashMap::new(),
             engine,
             response_buf: Vec::with_capacity(64),
             audio_peaks: HashMap::new(),
             audio_data: HashMap::new(),
             undo_manager: UndoManager::new(UNDO_MAX_DEPTH),
+            preview: None,
         };
         app.install_initial_clips();
         app
@@ -518,13 +439,6 @@ impl AppData {
 
     pub fn clip(&self, id: ClipId) -> Option<&ClipState> {
         self.clips.iter().find(|c| c.id == id)
-    }
-
-    pub fn clips_for_track(&self, track_id: TrackId) -> Vec<&ClipState> {
-        self.clips
-            .iter()
-            .filter(|c| c.track_id == track_id)
-            .collect()
     }
 
     /// Whether there is an action available to undo.
@@ -584,6 +498,9 @@ impl AppData {
             EngineCommand::Stop => Some(CoreCommand::Stop),
             EngineCommand::Pause => Some(CoreCommand::Pause),
             EngineCommand::Record => Some(CoreCommand::StartRecording),
+            EngineCommand::RecordWithCountIn { bars } => {
+                Some(CoreCommand::StartRecordingWithCountIn { bars: *bars })
+            }
             EngineCommand::SetTempo(bpm) => Some(CoreCommand::SetTempo(*bpm)),
             EngineCommand::SetTrackVolume { track_id, volume } => {
                 Some(CoreCommand::SetTrackVolume {
@@ -795,6 +712,13 @@ impl AppData {
                 }
                 EngineResponse::RecordingError { track_id, error } => {
                     log::error!("Recording error on track {track_id:?}: {error}");
+                }
+                EngineResponse::CountInBeat { bar, beat, .. } => {
+                    log::info!("Count-in: bar {}, beat {}", bar + 1, beat + 1);
+                }
+                EngineResponse::CountInComplete => {
+                    log::info!("Count-in complete — recording started");
+                    self.transport.is_recording = true;
                 }
             }
         }
@@ -1284,8 +1208,14 @@ impl AppData {
         self.transport.record_start_position = Some(self.transport.position);
         self.transport.recording_tracks = armed_tracks.iter().map(|(id, _)| *id).collect();
 
-        // Send StartRecording to engine (sets is_recording on armed track nodes)
-        self.send_command(EngineCommand::Record);
+        // Send recording command — with or without count-in pre-roll
+        if self.count_in_bars > 0 {
+            self.send_command(EngineCommand::RecordWithCountIn {
+                bars: self.count_in_bars,
+            });
+        } else {
+            self.send_command(EngineCommand::Record);
+        }
 
         // Start disk recording for each armed track
         if let EngineMode::Real { bridge, .. } = &mut self.engine {
@@ -2002,6 +1932,112 @@ impl Model for AppData {
             AppEvent::SelectAllClips => {
                 let all_ids: HashSet<ClipId> = self.clips.iter().map(|c| c.id).collect();
                 self.arrangement.selected_clips = ClipSelection { clips: all_ids };
+            }
+
+            // -- Track color picker --
+            AppEvent::ShowColorPicker { track_id, anchor_y } => {
+                self.color_picker = ColorPickerState {
+                    visible: true,
+                    track_id: Some(*track_id),
+                    anchor_y: *anchor_y,
+                };
+            }
+            AppEvent::HideColorPicker => {
+                self.color_picker = ColorPickerState::default();
+            }
+            AppEvent::SetTrackColor { track_id, color } => {
+                let old_color = self
+                    .tracks
+                    .iter()
+                    .find(|t| t.id == *track_id)
+                    .map(|t| t.color);
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == *track_id) {
+                    track.color = *color;
+                }
+                if let Some(old) = old_color {
+                    self.undo_manager
+                        .push(Box::new(undo_actions::SetTrackColorAction {
+                            track_id: *track_id,
+                            old_color: old,
+                            new_color: *color,
+                        }));
+                }
+                self.color_picker = ColorPickerState::default();
+            }
+
+            // -- Track reorder --
+            AppEvent::ReorderTrack {
+                from_index,
+                to_index,
+            } => {
+                let from = *from_index;
+                let to = *to_index;
+                if from < self.tracks.len() && to < self.tracks.len() && from != to {
+                    let track = self.tracks.remove(from);
+                    self.tracks.insert(to, track);
+                    self.undo_manager
+                        .push(Box::new(undo_actions::ReorderTrackAction {
+                            old_index: from,
+                            new_index: to,
+                        }));
+                }
+            }
+            AppEvent::UpdateTrackDrag(drag_state) => {
+                self.arrangement.track_drag = drag_state.clone();
+            }
+
+            // -- Audio preview --
+            AppEvent::PreviewFile(index) => {
+                // Stop existing preview
+                if let Some(p) = self.preview.take() {
+                    p.stop();
+                }
+                if let Some(entry) = self.browser.entries.get(*index).cloned() {
+                    if entry.is_audio() {
+                        match ma_audio_engine::audio_decode::decode_audio_file(&entry.path) {
+                            Ok(decoded) => {
+                                let data: Arc<[f32]> =
+                                    Arc::from(decoded.samples.into_boxed_slice());
+                                match crate::audio_preview::AudioPreview::play(
+                                    data,
+                                    decoded.channels,
+                                    decoded.sample_rate,
+                                    decoded.length_samples,
+                                ) {
+                                    Ok(preview) => {
+                                        self.browser.previewing = Some(*index);
+                                        self.preview = Some(preview);
+                                    }
+                                    Err(e) => log::warn!("Preview playback failed: {e}"),
+                                }
+                            }
+                            Err(e) => log::warn!("Preview decode failed: {e}"),
+                        }
+                    }
+                }
+            }
+            AppEvent::StopPreview => {
+                if let Some(p) = self.preview.take() {
+                    p.stop();
+                }
+                self.browser.previewing = None;
+            }
+
+            // -- MIDI overdub --
+            AppEvent::ToggleOverdub => {
+                self.overdub_enabled = !self.overdub_enabled;
+            }
+
+            // -- Device bypass --
+            AppEvent::ToggleDeviceBypass {
+                track_id,
+                device_index,
+            } => {
+                if let Some(chain) = self.device_chains.get_mut(track_id) {
+                    if let Some(device) = chain.get_mut(*device_index) {
+                        device.bypassed = !device.bypassed;
+                    }
+                }
             }
         });
     }

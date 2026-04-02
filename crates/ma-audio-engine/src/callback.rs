@@ -11,6 +11,7 @@
 //! 4. Send meter events
 //! 5. Copy output to cpal buffer
 
+use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::time::Instant;
@@ -18,11 +19,13 @@ use std::time::Instant;
 use ma_core::audio_buffer::MAX_CHANNELS;
 use ma_core::commands::EngineCommand;
 use ma_core::events::EngineEvent;
+use ma_core::ids::TrackId;
 
 use crate::command_processor;
 use crate::graph::node::ProcessContext;
 use crate::graph::topology::AudioGraph;
 use crate::input_capture::InputCaptureReader;
+use crate::metronome::Metronome;
 use crate::track::Track;
 use crate::transport::Transport;
 
@@ -55,6 +58,13 @@ pub struct CallbackState {
 
     /// Track metadata (for command routing).
     pub tracks: Vec<Track>,
+
+    /// Pre-built index for O(1) track lookup by TrackId.
+    /// Built off-thread in build_engine(), read-only on audio thread.
+    pub track_index: HashMap<TrackId, usize>,
+
+    /// Metronome click generator for count-in and playback.
+    pub metronome: Metronome,
 
     /// Index of the InputNode in the graph (for filling capture buffer).
     pub input_node_index: Option<usize>,
@@ -148,6 +158,7 @@ fn audio_callback_inner(state: &mut CallbackState, output: &mut [f32], num_frame
         &mut state.transport,
         &mut state.graph,
         &state.tracks,
+        &state.track_index,
     );
 
     if shutdown {
@@ -187,7 +198,46 @@ fn audio_callback_inner(state: &mut CallbackState, output: &mut [f32], num_frame
         }
     }
 
-    // 3. Advance transport
+    // 3. Count-in processing (before transport advance)
+    if state.transport.state() == ma_core::parameters::TransportState::CountingIn {
+        if let Some((bar, beat, is_complete)) = state.transport.advance_count_in(num_frames) {
+            state.metronome.trigger(beat == 0);
+            push_event(
+                &mut state.event_producer,
+                EngineEvent::CountInBeat {
+                    bar,
+                    beat,
+                    total_bars: state.transport.count_in_bars(),
+                },
+            );
+            if is_complete {
+                state.transport.start_recording();
+                // Set is_recording on all armed track nodes
+                for track in &state.tracks {
+                    if track.record_armed.load(Ordering::Relaxed) {
+                        if let Some(idx) = track.track_node_graph_index {
+                            if let Some(track_node) = state
+                                .graph
+                                .node_downcast_mut::<crate::graph::nodes::track_node::TrackNode>(
+                                idx,
+                            ) {
+                                track_node.is_recording.store(true, Ordering::Release);
+                            }
+                        }
+                    }
+                }
+                push_event(
+                    &mut state.event_producer,
+                    EngineEvent::TransportStateChanged(
+                        ma_core::parameters::TransportState::Recording,
+                    ),
+                );
+                push_event(&mut state.event_producer, EngineEvent::CountInComplete);
+            }
+        }
+    }
+
+    // 3b. Advance transport
     let playhead = state.transport.advance(num_frames);
 
     // 4. Compute solo state across all tracks
@@ -243,6 +293,15 @@ fn audio_callback_inner(state: &mut CallbackState, output: &mut [f32], num_frame
         }
     } else {
         output.fill(0.0);
+    }
+
+    // 8b. Mix metronome click into output (for count-in)
+    // Output is interleaved stereo (L0 R0 L1 R1...) — advance metronome once per frame,
+    // add the same mono click sample to both channels.
+    for frame in output.chunks_exact_mut(2) {
+        let click = state.metronome.next_sample();
+        frame[0] += click;
+        frame[1] += click;
     }
 
     // 9. Send metering events

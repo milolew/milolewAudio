@@ -31,6 +31,12 @@ impl TransportBar {
                     .class("transport-btn")
                     .toggle_class("recording", AppData::transport.map(|t| t.is_recording));
 
+                // Overdub toggle
+                Button::new(cx, |cx| Label::new(cx, "OVR"))
+                    .on_press(|cx| cx.emit(AppEvent::ToggleOverdub))
+                    .class("transport-btn")
+                    .toggle_class("active", AppData::overdub_enabled);
+
                 Element::new(cx).class("separator");
 
                 // Position display (Bar.Beat.Tick)

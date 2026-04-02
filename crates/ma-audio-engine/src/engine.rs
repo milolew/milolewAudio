@@ -259,12 +259,18 @@ pub fn build_engine(
         track.player_node_graph_index = graph.find_node_index(track.player_node_id);
     }
 
+    // Build track index HashMap for O(1) lookup in command processor
+    let track_index: std::collections::HashMap<ma_core::ids::TrackId, usize> =
+        tracks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
+
     let callback_state = CallbackState {
         command_consumer,
         event_producer,
         graph,
         transport,
         tracks,
+        track_index,
+        metronome: crate::metronome::Metronome::new(config.sample_rate as f64),
         input_node_index: input_node_graph_index,
         output_node_index: output_node_graph_index,
         input_capture_reader: None,
@@ -364,6 +370,7 @@ mod tests {
             &mut state.transport,
             &mut state.graph,
             &state.tracks,
+            &state.track_index,
         );
 
         assert_eq!(state.transport.state(), TransportState::Playing);
@@ -437,6 +444,7 @@ mod tests {
             &mut state.transport,
             &mut state.graph,
             &state.tracks,
+            &state.track_index,
         );
 
         let track = state.tracks.iter().find(|t| t.id == audio_id).unwrap();
@@ -473,6 +481,7 @@ mod tests {
             &mut state.transport,
             &mut state.graph,
             &state.tracks,
+            &state.track_index,
         );
 
         let audio = state.tracks.iter().find(|t| t.id == audio_id).unwrap();
@@ -521,6 +530,7 @@ mod tests {
             &mut state.transport,
             &mut state.graph,
             &state.tracks,
+            &state.track_index,
         );
 
         let track = state.tracks.iter().find(|t| t.id == midi_id).unwrap();

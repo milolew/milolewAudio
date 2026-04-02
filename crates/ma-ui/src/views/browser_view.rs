@@ -126,13 +126,14 @@ impl View for BrowserEntryRow {
         let bounds = cx.bounds();
         let scale = cx.scale_factor();
 
-        let (entry, is_selected) = match cx.data::<AppData>() {
+        let (entry, is_selected, is_previewing) = match cx.data::<AppData>() {
             Some(app) => {
                 let entry = app.browser.entries.get(self.index).cloned();
                 let selected = app.browser.selected_index == Some(self.index);
-                (entry, selected)
+                let previewing = app.browser.previewing == Some(self.index);
+                (entry, selected, previewing)
             }
-            None => (None, false),
+            None => (None, false, false),
         };
 
         let entry = match entry {
@@ -170,6 +171,8 @@ impl View for BrowserEntryRow {
 
         let prefix = if entry.is_dir {
             ">"
+        } else if entry.is_audio() && is_previewing {
+            "\u{25B6}" // ▶ playing indicator
         } else if entry.is_audio() {
             "~"
         } else if entry.is_midi() {
@@ -214,9 +217,12 @@ impl View for BrowserEntryRow {
         event.map(|window_event, meta| {
             if let WindowEvent::MouseDown(MouseButton::Left) = window_event {
                 cx.emit(AppEvent::BrowserSelect(self.index));
+                // Preview audio files on single click
+                cx.emit(AppEvent::PreviewFile(self.index));
                 meta.consume();
             }
             if let WindowEvent::MouseDoubleClick(MouseButton::Left) = window_event {
+                cx.emit(AppEvent::StopPreview);
                 cx.emit(AppEvent::BrowserActivate(self.index));
                 meta.consume();
             }

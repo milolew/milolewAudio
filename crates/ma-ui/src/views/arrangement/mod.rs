@@ -26,7 +26,7 @@ use vizia::prelude::*;
 use vizia::vg;
 
 use crate::app_data::{AppData, AppEvent};
-use crate::state::arrangement_state::ClipSelection;
+use crate::state::arrangement_state::{ClipSelection, TrackDragState};
 use crate::types::time::PPQN;
 #[cfg(test)]
 use crate::types::track::ClipId;
@@ -100,7 +100,146 @@ impl ArrangementView {
                     .class("track-rows");
                 },
             );
+
+            // Color picker popup overlay
+            ColorPickerOverlay::new(cx);
         })
+    }
+}
+
+/// 16-color palette for track color picking.
+const TRACK_COLORS: [[u8; 3]; 16] = [
+    [100, 160, 255],
+    [255, 140, 80],
+    [80, 220, 120],
+    [200, 100, 255],
+    [255, 200, 60],
+    [60, 200, 200],
+    [255, 100, 140],
+    [160, 220, 80],
+    [200, 160, 120],
+    [140, 140, 220],
+    [220, 180, 220],
+    [180, 220, 180],
+    [100, 100, 100],
+    [200, 200, 200],
+    [255, 80, 80],
+    [80, 160, 200],
+];
+
+/// Color picker overlay — 4x4 grid of color swatches, shown on right-click of track header.
+struct ColorPickerOverlay;
+
+impl ColorPickerOverlay {
+    fn new(cx: &mut Context) -> Handle<'_, Self> {
+        Self.build(cx, |_cx| {})
+    }
+}
+
+impl View for ColorPickerOverlay {
+    fn element(&self) -> Option<&'static str> {
+        Some("color-picker-overlay")
+    }
+
+    fn draw(&self, cx: &mut DrawContext, canvas: &Canvas) {
+        let Some(app) = cx.data::<AppData>() else {
+            return;
+        };
+        if !app.color_picker.visible {
+            return;
+        }
+
+        let scale = cx.scale_factor();
+        let swatch_size = 20.0 * scale;
+        let padding = 3.0 * scale;
+        let cols = 4u32;
+        let rows = 4u32;
+        let grid_w = cols as f32 * (swatch_size + padding) + padding;
+        let grid_h = rows as f32 * (swatch_size + padding) + padding;
+
+        // Position below track header, left-aligned with header
+        let popup_x = 4.0 * scale;
+        let popup_y = app.color_picker.anchor_y;
+
+        // Background
+        let mut bg = vg::Paint::default();
+        bg.set_color(vg::Color::from_argb(240, 30, 30, 34));
+        bg.set_style(vg::PaintStyle::Fill);
+        bg.set_anti_alias(true);
+        let rect = vg::Rect::from_xywh(popup_x, popup_y, grid_w, grid_h);
+        let rrect = vg::RRect::new_rect_xy(rect, 4.0 * scale, 4.0 * scale);
+        canvas.draw_rrect(rrect, &bg);
+
+        // Border
+        let mut border = vg::Paint::default();
+        border.set_color(vg::Color::from_argb(200, 80, 80, 80));
+        border.set_style(vg::PaintStyle::Stroke);
+        border.set_stroke_width(1.0 * scale);
+        border.set_anti_alias(true);
+        canvas.draw_rrect(rrect, &border);
+
+        // Color swatches
+        for (i, color) in TRACK_COLORS.iter().enumerate() {
+            let col = (i % cols as usize) as f32;
+            let row = (i / cols as usize) as f32;
+            let x = popup_x + padding + col * (swatch_size + padding);
+            let y = popup_y + padding + row * (swatch_size + padding);
+
+            let mut paint = vg::Paint::default();
+            paint.set_color(vg::Color::from_argb(255, color[0], color[1], color[2]));
+            paint.set_style(vg::PaintStyle::Fill);
+            paint.set_anti_alias(true);
+            let swatch_rect = vg::Rect::from_xywh(x, y, swatch_size, swatch_size);
+            let swatch_rrect = vg::RRect::new_rect_xy(swatch_rect, 3.0 * scale, 3.0 * scale);
+            canvas.draw_rrect(swatch_rrect, &paint);
+        }
+    }
+
+    fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
+        event.map(|window_event, meta| {
+            if let WindowEvent::MouseDown(MouseButton::Left) = window_event {
+                let Some(app) = cx.data::<AppData>() else {
+                    return;
+                };
+                if !app.color_picker.visible {
+                    return;
+                }
+                let Some(track_id) = app.color_picker.track_id else {
+                    return;
+                };
+
+                let scale = cx.scale_factor();
+                let swatch_size = 20.0 * scale;
+                let padding = 3.0 * scale;
+                let cols = 4usize;
+                let popup_x = 4.0 * scale;
+                let popup_y = app.color_picker.anchor_y;
+
+                let mx = cx.mouse().cursor_x;
+                let my = cx.mouse().cursor_y;
+
+                // Check if click is inside a swatch
+                for (i, color) in TRACK_COLORS.iter().enumerate() {
+                    let col = (i % cols) as f32;
+                    let row = (i / cols) as f32;
+                    let sx = popup_x + padding + col * (swatch_size + padding);
+                    let sy = popup_y + padding + row * (swatch_size + padding);
+
+                    if mx >= sx && mx <= sx + swatch_size && my >= sy && my <= sy + swatch_size {
+                        cx.emit(AppEvent::SetTrackColor {
+                            track_id,
+                            color: *color,
+                        });
+                        meta.consume();
+                        return;
+                    }
+                }
+
+                // Click outside swatches — dismiss
+                cx.emit(AppEvent::HideColorPicker);
+                meta.consume();
+            }
+        });
     }
 }
 
@@ -160,11 +299,17 @@ impl View for ArrangementView {
 /// Track header with color bar, name, and type indicator.
 struct TrackHeader {
     track_index: usize,
+    /// Pending drag start Y for drag-to-reorder.
+    drag_start_y: Option<f32>,
 }
 
 impl TrackHeader {
     fn new(cx: &mut Context, track_index: usize) -> Handle<'_, Self> {
-        Self { track_index }.build(cx, |_cx| {})
+        Self {
+            track_index,
+            drag_start_y: None,
+        }
+        .build(cx, |_cx| {})
     }
 }
 
@@ -306,42 +451,151 @@ impl View for TrackHeader {
             (bounds.x + bounds.w - 0.5, bounds.y + bounds.h),
             &sep_paint,
         );
+
+        // -- Drag reorder indicator --
+        if let TrackDragState::Dragging {
+            track_index: drag_idx,
+            current_y,
+            ..
+        } = &app.arrangement.track_drag
+        {
+            if *drag_idx == self.track_index {
+                // Highlight the source track being dragged
+                let mut drag_paint = vg::Paint::default();
+                drag_paint.set_color(vg::Color::from_argb(60, 255, 255, 255));
+                drag_paint.set_style(vg::PaintStyle::Fill);
+                canvas.draw_rect(
+                    vg::Rect::from_xywh(bounds.x, bounds.y, bounds.w, bounds.h),
+                    &drag_paint,
+                );
+
+                // Draw drop indicator line at target position
+                let track_height = app.arrangement.track_height;
+                let relative_y = *current_y - RULER_HEIGHT;
+                let target_idx = (relative_y / track_height).round().max(0.0) as usize;
+                let indicator_y = RULER_HEIGHT + target_idx as f32 * track_height;
+
+                let mut line_paint = vg::Paint::default();
+                line_paint.set_color(vg::Color::from_argb(255, 100, 180, 255));
+                line_paint.set_style(vg::PaintStyle::Stroke);
+                line_paint.set_stroke_width(2.0 * scale);
+                canvas.draw_line(
+                    (0.0, indicator_y),
+                    (bounds.x + bounds.w, indicator_y),
+                    &line_paint,
+                );
+            }
+        }
     }
 
     fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
         event.map(|window_event, meta| {
-            if let WindowEvent::MouseDown(MouseButton::Left) = window_event {
-                if let Some(app) = cx.data::<AppData>() {
-                    if let Some(track) = app.tracks.get(self.track_index) {
-                        let bounds = cx.bounds();
-                        let scale = cx.scale_factor();
-                        let cursor_x = cx.mouse().cursor_x;
+            match window_event {
+                WindowEvent::MouseDown(MouseButton::Left) => {
+                    if let Some(app) = cx.data::<AppData>() {
+                        if let Some(track) = app.tracks.get(self.track_index) {
+                            let bounds = cx.bounds();
+                            let scale = cx.scale_factor();
+                            let cursor_x = cx.mouse().cursor_x;
+                            let cursor_y = cx.mouse().cursor_y;
+
+                            // Check if click is in arm button area (top-right circle)
+                            let arm_cx = bounds.x + bounds.w - 16.0 * scale;
+                            let arm_cy = bounds.y + 14.0 * scale;
+                            let dx = cursor_x - arm_cx;
+                            let dy = cursor_y - arm_cy;
+                            let hit_arm = (dx * dx + dy * dy) < (12.0 * scale * 12.0 * scale);
+
+                            // Check if click is in monitoring area ("M" below arm)
+                            let mon_cy = arm_cy + 12.0 * scale;
+                            let dm_x = cursor_x - arm_cx;
+                            let dm_y = cursor_y - mon_cy;
+                            let hit_mon = dm_x.abs() < 10.0 * scale && dm_y.abs() < 8.0 * scale;
+
+                            if hit_arm {
+                                cx.emit(AppEvent::ToggleRecordArm(track.id));
+                            } else if hit_mon {
+                                cx.emit(AppEvent::ToggleInputMonitoring(track.id));
+                            } else {
+                                cx.emit(AppEvent::SelectTrack(track.id));
+                                // Start potential drag for reorder
+                                self.drag_start_y = Some(cursor_y);
+                                cx.capture();
+                            }
+                        }
+                    }
+                    cx.needs_redraw();
+                    meta.consume();
+                }
+
+                WindowEvent::MouseMove(_, _) => {
+                    if let Some(start_y) = self.drag_start_y {
                         let cursor_y = cx.mouse().cursor_y;
-
-                        // Check if click is in arm button area (top-right circle)
-                        let arm_cx = bounds.x + bounds.w - 16.0 * scale;
-                        let arm_cy = bounds.y + 14.0 * scale;
-                        let dx = cursor_x - arm_cx;
-                        let dy = cursor_y - arm_cy;
-                        let hit_arm = (dx * dx + dy * dy) < (12.0 * scale * 12.0 * scale);
-
-                        // Check if click is in monitoring area ("M" below arm)
-                        let mon_cy = arm_cy + 12.0 * scale;
-                        let dm_x = cursor_x - arm_cx;
-                        let dm_y = cursor_y - mon_cy;
-                        let hit_mon = dm_x.abs() < 10.0 * scale && dm_y.abs() < 8.0 * scale;
-
-                        if hit_arm {
-                            cx.emit(AppEvent::ToggleRecordArm(track.id));
-                        } else if hit_mon {
-                            cx.emit(AppEvent::ToggleInputMonitoring(track.id));
-                        } else {
-                            cx.emit(AppEvent::SelectTrack(track.id));
+                        let delta = (cursor_y - start_y).abs();
+                        if delta > DRAG_THRESHOLD {
+                            cx.emit(AppEvent::UpdateTrackDrag(TrackDragState::Dragging {
+                                track_index: self.track_index,
+                                start_y,
+                                current_y: cursor_y,
+                            }));
+                            cx.needs_redraw();
                         }
                     }
                 }
-                cx.needs_redraw();
-                meta.consume();
+
+                WindowEvent::MouseUp(MouseButton::Left) => {
+                    if self.drag_start_y.take().is_some() {
+                        if let Some(app) = cx.data::<AppData>() {
+                            if let TrackDragState::Dragging {
+                                track_index,
+                                current_y,
+                                ..
+                            } = &app.arrangement.track_drag
+                            {
+                                let track_count = app.tracks.len();
+                                if track_count == 0 {
+                                    cx.emit(AppEvent::UpdateTrackDrag(TrackDragState::Idle));
+                                    cx.release();
+                                    return;
+                                }
+                                let track_height = app.arrangement.track_height;
+                                // Compute target index from cursor Y relative to first track
+                                let first_track_y = RULER_HEIGHT;
+                                let relative_y = *current_y - first_track_y;
+                                let target = (relative_y / track_height)
+                                    .round()
+                                    .max(0.0)
+                                    .min(track_count.saturating_sub(1) as f32)
+                                    as usize;
+                                if target != *track_index {
+                                    cx.emit(AppEvent::ReorderTrack {
+                                        from_index: *track_index,
+                                        to_index: target,
+                                    });
+                                }
+                            }
+                        }
+                        cx.emit(AppEvent::UpdateTrackDrag(TrackDragState::Idle));
+                        cx.release();
+                        cx.needs_redraw();
+                    }
+                }
+
+                // Right-click → show color picker popup
+                WindowEvent::MouseDown(MouseButton::Right) => {
+                    if let Some(app) = cx.data::<AppData>() {
+                        if let Some(track) = app.tracks.get(self.track_index) {
+                            let bounds = cx.bounds();
+                            cx.emit(AppEvent::ShowColorPicker {
+                                track_id: track.id,
+                                anchor_y: bounds.y + bounds.h,
+                            });
+                        }
+                    }
+                    meta.consume();
+                }
+
+                _ => {}
             }
         });
     }

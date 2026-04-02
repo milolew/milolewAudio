@@ -65,6 +65,20 @@ pub struct ArrangementState {
     pub clipboard: ClipClipboard,
     /// Auto-scroll to keep the playhead visible during playback.
     pub follow_playhead: bool,
+    /// Track header drag state for reordering.
+    pub track_drag: TrackDragState,
+}
+
+/// State machine for track header drag-to-reorder.
+#[derive(Debug, Clone, Default)]
+pub enum TrackDragState {
+    #[default]
+    Idle,
+    Dragging {
+        track_index: usize,
+        start_y: f32,
+        current_y: f32,
+    },
 }
 
 impl Default for ArrangementState {
@@ -80,6 +94,7 @@ impl Default for ArrangementState {
             interaction: ClipInteraction::default(),
             clipboard: ClipClipboard::default(),
             follow_playhead: true,
+            track_drag: TrackDragState::default(),
         }
     }
 }

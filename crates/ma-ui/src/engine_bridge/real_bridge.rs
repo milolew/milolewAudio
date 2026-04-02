@@ -85,8 +85,24 @@ impl RealEngineBridge {
                     });
                 }
                 EngineEvent::TransportStateChanged(state) => {
-                    self.last_playing = state == TransportState::Playing;
+                    self.last_playing =
+                        state == TransportState::Playing || state == TransportState::CountingIn;
                     self.last_recording = state == TransportState::Recording;
+                }
+                EngineEvent::CountInBeat {
+                    bar,
+                    beat,
+                    total_bars,
+                } => {
+                    out.push(EngineResponse::CountInBeat {
+                        bar,
+                        beat,
+                        total_bars,
+                    });
+                }
+                EngineEvent::CountInComplete => {
+                    self.last_recording = true;
+                    out.push(EngineResponse::CountInComplete);
                 }
                 EngineEvent::PlayheadPosition(samples) => {
                     let ticks = self.samples_to_ticks(samples);

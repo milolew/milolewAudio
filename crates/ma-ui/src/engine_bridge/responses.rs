@@ -40,4 +40,10 @@ pub enum EngineResponse {
 
     /// Recording error (disk I/O failure).
     RecordingError { track_id: TrackId, error: String },
+
+    /// Count-in beat reached (for UI display).
+    CountInBeat { bar: u8, beat: u8, total_bars: u8 },
+
+    /// Count-in complete — recording has started.
+    CountInComplete,
 }

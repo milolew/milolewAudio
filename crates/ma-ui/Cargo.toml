@@ -9,6 +9,7 @@ description = "milolew Audio — DAW GUI interface (vizia-based)"
 ma-core = { workspace = true }
 ma-audio-engine = { workspace = true }
 vizia = "0.3"
+cpal = { workspace = true }
 rtrb = { workspace = true }
 uuid = { workspace = true }
 log = { workspace = true }

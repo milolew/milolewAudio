@@ -197,6 +197,8 @@ pub enum TransportState {
     Playing,
     Paused,
     Recording,
+    /// Pre-roll count-in: metronome plays but recording has not started yet.
+    CountingIn,
 }
 
 /// MIDI-related types shared between engine and GUI.

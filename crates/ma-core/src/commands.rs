@@ -66,6 +66,11 @@ pub enum EngineCommand {
     /// Begin recording on all armed tracks (transport must be playing).
     StartRecording,
 
+    /// Begin count-in pre-roll before recording.
+    /// Plays metronome clicks for the specified number of bars, then transitions
+    /// to recording. The playhead does not advance during count-in.
+    StartRecordingWithCountIn { bars: u8 },
+
     /// Stop recording on all armed tracks.
     StopRecording,
 

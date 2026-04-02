@@ -18,6 +18,8 @@ pub mod device_slot;
 
 use vizia::prelude::*;
 
+use crate::app_data::{AppData, AppEvent};
+
 use self::device_slot::{DeviceSlot, DeviceSlotData, DeviceSlotEvent, ParameterData};
 
 /// Device rack view — renders an L→R effect chain for the selected track.
@@ -54,20 +56,25 @@ impl View for DeviceRackView {
         Some("device-rack-view")
     }
 
-    fn event(&mut self, _cx: &mut EventContext, event: &mut Event) {
-        // Handle device slot events — will forward to AppEvent::SetParameter when integrated
-        event.map(|slot_event, _meta| match slot_event {
-            DeviceSlotEvent::ParameterChanged {
-                device_index,
-                param_index,
-                value,
-            } => {
-                // TODO: cx.emit(AppEvent::SetParameter { device_id, param_id, value })
-                let _ = (device_index, param_index, value);
-            }
-            DeviceSlotEvent::ToggleBypass { device_index } => {
-                // TODO: cx.emit(AppEvent::ToggleBypass { device_id })
-                let _ = device_index;
+    fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
+        event.map(|slot_event, _meta| {
+            // Get the selected track ID for routing bypass commands
+            let track_id = cx
+                .data::<AppData>()
+                .and_then(|app| app.arrangement.selected_track);
+
+            match slot_event {
+                DeviceSlotEvent::ParameterChanged { .. } => {
+                    // Parameter changes are handled locally in DeviceSlot for now
+                }
+                DeviceSlotEvent::ToggleBypass { device_index } => {
+                    if let Some(track_id) = track_id {
+                        cx.emit(AppEvent::ToggleDeviceBypass {
+                            track_id,
+                            device_index: *device_index,
+                        });
+                    }
+                }
             }
         });
     }
