@@ -296,8 +296,12 @@ fn audio_callback_inner(state: &mut CallbackState, output: &mut [f32], num_frame
     }
 
     // 8b. Mix metronome click into output (for count-in)
-    for sample in output.iter_mut() {
-        *sample += state.metronome.next_sample();
+    // Output is interleaved stereo (L0 R0 L1 R1...) — advance metronome once per frame,
+    // add the same mono click sample to both channels.
+    for frame in output.chunks_exact_mut(2) {
+        let click = state.metronome.next_sample();
+        frame[0] += click;
+        frame[1] += click;
     }
 
     // 9. Send metering events

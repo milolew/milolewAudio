@@ -553,6 +553,11 @@ impl View for TrackHeader {
                             } = &app.arrangement.track_drag
                             {
                                 let track_count = app.tracks.len();
+                                if track_count == 0 {
+                                    cx.emit(AppEvent::UpdateTrackDrag(TrackDragState::Idle));
+                                    cx.release();
+                                    return;
+                                }
                                 let track_height = app.arrangement.track_height;
                                 // Compute target index from cursor Y relative to first track
                                 let first_track_y = RULER_HEIGHT;
@@ -560,7 +565,7 @@ impl View for TrackHeader {
                                 let target = (relative_y / track_height)
                                     .round()
                                     .max(0.0)
-                                    .min((track_count - 1) as f32)
+                                    .min(track_count.saturating_sub(1) as f32)
                                     as usize;
                                 if target != *track_index {
                                     cx.emit(AppEvent::ReorderTrack {

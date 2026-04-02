@@ -1494,4 +1494,91 @@ mod tests {
             assert_eq!(note.start_tick, *orig_start);
         }
     }
+
+    #[test]
+    fn set_track_color_apply_revert() {
+        let mut app = AppData::new();
+        let track_id = app.tracks[0].id;
+        let original_color = app.tracks[0].color;
+        let new_color = [255, 0, 0];
+
+        let action = SetTrackColorAction {
+            track_id,
+            old_color: original_color,
+            new_color,
+        };
+
+        action.apply(&mut app);
+        assert_eq!(app.tracks[0].color, new_color);
+
+        action.revert(&mut app);
+        assert_eq!(app.tracks[0].color, original_color);
+    }
+
+    #[test]
+    fn reorder_track_apply_revert() {
+        let mut app = AppData::new();
+        let first_id = app.tracks[0].id;
+        let second_id = app.tracks[1].id;
+
+        let action = ReorderTrackAction {
+            old_index: 0,
+            new_index: 1,
+        };
+
+        action.apply(&mut app);
+        assert_eq!(app.tracks[0].id, second_id);
+        assert_eq!(app.tracks[1].id, first_id);
+
+        action.revert(&mut app);
+        assert_eq!(app.tracks[0].id, first_id);
+        assert_eq!(app.tracks[1].id, second_id);
+    }
+
+    #[test]
+    fn reorder_track_first_to_last() {
+        let mut app = AppData::new();
+        let first_id = app.tracks[0].id;
+        let last_idx = app.tracks.len() - 1;
+        let last_id = app.tracks[last_idx].id;
+
+        let action = ReorderTrackAction {
+            old_index: 0,
+            new_index: last_idx,
+        };
+
+        action.apply(&mut app);
+        assert_eq!(app.tracks[last_idx].id, first_id);
+
+        action.revert(&mut app);
+        assert_eq!(app.tracks[0].id, first_id);
+        assert_eq!(app.tracks[last_idx].id, last_id);
+    }
+
+    #[test]
+    fn overdub_action_apply_revert() {
+        let mut app = AppData::new();
+        let clip_id = app.clips[0].id;
+        let old_clip = app.clips[0].clone();
+        let mut new_clip = old_clip.clone();
+        new_clip.name = "Overdubbed".into();
+
+        let action = OverdubAction {
+            clip_id,
+            old_clip: old_clip.clone(),
+            new_clip: new_clip.clone(),
+        };
+
+        action.apply(&mut app);
+        assert_eq!(
+            app.clips.iter().find(|c| c.id == clip_id).unwrap().name,
+            "Overdubbed"
+        );
+
+        action.revert(&mut app);
+        assert_eq!(
+            app.clips.iter().find(|c| c.id == clip_id).unwrap().name,
+            old_clip.name
+        );
+    }
 }

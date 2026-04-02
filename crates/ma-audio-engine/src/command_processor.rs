@@ -433,6 +433,27 @@ mod tests {
     }
 
     #[test]
+    fn start_recording_with_count_in_command() {
+        let (mut producer, mut consumer, mut state) = test_engine();
+        producer
+            .push(EngineCommand::StartRecordingWithCountIn { bars: 1 })
+            .unwrap();
+        dispatch(&mut state);
+        assert_eq!(state.transport.state(), TransportState::CountingIn);
+        // Should emit TransportStateChanged(CountingIn) event
+        let mut found = false;
+        while let Ok(event) = consumer.pop() {
+            if matches!(
+                event,
+                EngineEvent::TransportStateChanged(TransportState::CountingIn)
+            ) {
+                found = true;
+            }
+        }
+        assert!(found, "Expected CountingIn state change event");
+    }
+
+    #[test]
     fn unknown_track_id_is_ignored() {
         let (mut producer, _, mut state) = test_engine();
         let bogus_id = TrackId::new();

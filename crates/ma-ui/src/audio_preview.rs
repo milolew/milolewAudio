@@ -55,6 +55,11 @@ impl AudioPreview {
             .build_output_stream(
                 &config,
                 move |output: &mut [f32], _info: &cpal::OutputCallbackInfo| {
+                    // Check if stop() was called externally
+                    if !play_flag.load(Ordering::Relaxed) {
+                        output.fill(0.0);
+                        return;
+                    }
                     let mut frame = pos.load(Ordering::Relaxed);
                     for chunk in output.chunks_exact_mut(out_channels) {
                         if frame >= total_frames {

@@ -185,7 +185,9 @@ impl Transport {
         self.count_in_beat = 0;
         let beats_per_second = self.tempo / 60.0;
         self.count_in_samples_per_beat = (self.sample_rate / beats_per_second) as i64;
-        self.count_in_sample_counter = 0;
+        // Initialize counter to samples_per_beat so the first callback
+        // immediately fires beat 0 (the downbeat click).
+        self.count_in_sample_counter = self.count_in_samples_per_beat;
         self.state = TransportState::CountingIn;
     }
 
@@ -322,5 +324,83 @@ mod tests {
         assert_eq!(t.tempo(), 20.0);
         t.set_tempo(5000.0);
         assert_eq!(t.tempo(), 999.0);
+    }
+
+    #[test]
+    fn count_in_sets_state() {
+        let mut t = Transport::new(48000.0);
+        t.start_count_in(1);
+        assert_eq!(t.state(), TransportState::CountingIn);
+        assert_eq!(t.count_in_bars(), 1);
+    }
+
+    #[test]
+    fn count_in_fires_first_beat_immediately() {
+        let mut t = Transport::new(48000.0);
+        t.set_tempo(120.0); // 2 beats/sec → 24000 samples/beat
+        t.start_count_in(1);
+
+        // First callback should fire beat 0 (counter initialized to samples_per_beat)
+        let result = t.advance_count_in(256);
+        assert!(result.is_some(), "First beat should fire on first callback");
+        let (bar, beat, _) = result.unwrap();
+        assert_eq!(bar, 0);
+        assert_eq!(beat, 0);
+    }
+
+    #[test]
+    fn count_in_does_not_advance_playhead() {
+        let mut t = Transport::new(48000.0);
+        t.set_position(1000);
+        t.start_count_in(1);
+        t.advance(256);
+        assert_eq!(
+            t.position(),
+            1000,
+            "Playhead should not advance during count-in"
+        );
+    }
+
+    #[test]
+    fn count_in_single_bar_completes_after_4_beats() {
+        let mut t = Transport::new(48000.0);
+        t.set_tempo(120.0); // 24000 samples/beat
+        t.start_count_in(1);
+
+        let mut beats_fired = 0;
+        let mut completed = false;
+        // Run enough frames for 4 beats + margin
+        for _ in 0..500 {
+            if let Some((_bar, _beat, is_complete)) = t.advance_count_in(256) {
+                beats_fired += 1;
+                if is_complete {
+                    completed = true;
+                    break;
+                }
+            }
+        }
+        assert_eq!(beats_fired, 4, "1 bar of 4/4 = 4 beats");
+        assert!(completed, "Count-in should complete after 4 beats");
+    }
+
+    #[test]
+    fn count_in_two_bars_completes_after_8_beats() {
+        let mut t = Transport::new(48000.0);
+        t.set_tempo(120.0);
+        t.start_count_in(2);
+
+        let mut beats_fired = 0;
+        let mut completed = false;
+        for _ in 0..1000 {
+            if let Some((_bar, _beat, is_complete)) = t.advance_count_in(256) {
+                beats_fired += 1;
+                if is_complete {
+                    completed = true;
+                    break;
+                }
+            }
+        }
+        assert_eq!(beats_fired, 8, "2 bars of 4/4 = 8 beats");
+        assert!(completed);
     }
 }
